@@ -40,15 +40,8 @@ export class PixiRenderer {
   private isDrawing = false
   private drawStart = { worldX: 0, worldY: 0 }
 
-  constructor(canvas: HTMLCanvasElement) {
-    this.app = new PIXI.Application({
-      view: canvas,
-      resizeTo: canvas,
-      backgroundColor: 0x111315,
-      antialias: true,
-      resolution: window.devicePixelRatio || 1,
-      autoDensity: true,
-    })
+  private constructor(app: PIXI.Application) {
+    this.app = app
 
     this.gridLayer = new PIXI.Graphics()
     this.objectLayer = new PIXI.Container()
@@ -60,13 +53,24 @@ export class PixiRenderer {
     this.app.stage.addChild(this.overlayLayer)
     this.app.stage.addChild(this.previewLayer)
 
-    this.app.stage.interactive = true
-    this.app.stage.hitArea = new PIXI.Rectangle(-1e6, -1e6, 2e6, 2e6)
-
     this.bindEvents()
 
     this.unsub = useEditorStore.subscribe(() => this.render())
     this.render()
+  }
+
+  static async create(container: HTMLElement): Promise<PixiRenderer> {
+    const app = new PIXI.Application()
+    await app.init({
+      resizeTo: container,
+      background: 0x111315,
+      antialias: true,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
+    })
+    app.canvas.style.cssText = "display:block;width:100%;height:100%;cursor:crosshair"
+    container.appendChild(app.canvas)
+    return new PixiRenderer(app)
   }
 
   private screenToWorld(sx: number, sy: number) {
@@ -84,13 +88,13 @@ export class PixiRenderer {
   }
 
   private bindEvents() {
-    const view = this.app.view as HTMLCanvasElement
+    const canvas = this.app.canvas
 
-    view.addEventListener("wheel", this.onWheel, { passive: false })
-    view.addEventListener("mousedown", this.onMouseDown)
-    view.addEventListener("mousemove", this.onMouseMove)
-    view.addEventListener("mouseup", this.onMouseUp)
-    view.addEventListener("contextmenu", e => e.preventDefault())
+    canvas.addEventListener("wheel", this.onWheel, { passive: false })
+    canvas.addEventListener("mousedown", this.onMouseDown)
+    canvas.addEventListener("mousemove", this.onMouseMove)
+    canvas.addEventListener("mouseup", this.onMouseUp)
+    canvas.addEventListener("contextmenu", e => e.preventDefault())
   }
 
   private onWheel = (e: WheelEvent) => {
@@ -99,7 +103,7 @@ export class PixiRenderer {
     const factor = e.deltaY < 0 ? 1.1 : 0.909
     const newZoom = Math.min(10, Math.max(0.1, store.zoom * factor))
 
-    const rect = (this.app.view as HTMLCanvasElement).getBoundingClientRect()
+    const rect = this.app.canvas.getBoundingClientRect()
     const sx = e.clientX - rect.left
     const sy = e.clientY - rect.top
     const cx = this.app.screen.width / 2
@@ -116,7 +120,7 @@ export class PixiRenderer {
   }
 
   private onMouseDown = (e: MouseEvent) => {
-    const rect = (this.app.view as HTMLCanvasElement).getBoundingClientRect()
+    const rect = this.app.canvas.getBoundingClientRect()
     const sx = e.clientX - rect.left
     const sy = e.clientY - rect.top
     const store = useEditorStore.getState()
@@ -155,7 +159,7 @@ export class PixiRenderer {
   }
 
   private onMouseMove = (e: MouseEvent) => {
-    const rect = (this.app.view as HTMLCanvasElement).getBoundingClientRect()
+    const rect = this.app.canvas.getBoundingClientRect()
     const sx = e.clientX - rect.left
     const sy = e.clientY - rect.top
     const world = this.screenToWorld(sx, sy)
@@ -187,7 +191,7 @@ export class PixiRenderer {
   }
 
   private onMouseUp = (e: MouseEvent) => {
-    const rect = (this.app.view as HTMLCanvasElement).getBoundingClientRect()
+    const rect = this.app.canvas.getBoundingClientRect()
     const sx = e.clientX - rect.left
     const sy = e.clientY - rect.top
 
@@ -253,10 +257,9 @@ export class PixiRenderer {
     if (tool === "door") color = COLORS.door
     if (tool === "window") color = COLORS.window
 
-    this.previewLayer.lineStyle(1, COLORS.selection, 0.8)
-    this.previewLayer.beginFill(color, 0.3)
-    this.previewLayer.drawRect(rx, ry, rw, rh)
-    this.previewLayer.endFill()
+    this.previewLayer.rect(rx, ry, rw, rh)
+    this.previewLayer.fill({ color, alpha: 0.3 })
+    this.previewLayer.stroke({ color: COLORS.selection, width: 1, alpha: 0.8 })
   }
 
   private hitTest(sx: number, sy: number): string | null {
@@ -347,35 +350,55 @@ export class PixiRenderer {
     const startX = Math.floor(worldLeft / GRID_MINOR) * GRID_MINOR
     const startY = Math.floor(worldTop / GRID_MINOR) * GRID_MINOR
 
+    // Minor grid lines batched together
     for (let wx = startX; wx <= worldRight; wx += GRID_MINOR) {
       const isMajor = Math.abs(wx % GRID_MAJOR) < 0.001 || Math.abs(wx % GRID_MAJOR - GRID_MAJOR) < 0.001
-      const color = isMajor ? COLORS.gridMajor : COLORS.gridMinor
-      const alpha = isMajor ? 1 : 0.7
-      g.lineStyle(1, color, alpha)
-      const s = toScreen(wx, worldTop)
-      const e = toScreen(wx, worldBottom)
-      g.moveTo(s.x, s.y)
-      g.lineTo(e.x, e.y)
+      if (!isMajor) {
+        const s = toScreen(wx, worldTop)
+        const e = toScreen(wx, worldBottom)
+        g.moveTo(s.x, s.y)
+        g.lineTo(e.x, e.y)
+      }
     }
-
     for (let wy = startY; wy <= worldBottom; wy += GRID_MINOR) {
       const isMajor = Math.abs(wy % GRID_MAJOR) < 0.001 || Math.abs(wy % GRID_MAJOR - GRID_MAJOR) < 0.001
-      const color = isMajor ? COLORS.gridMajor : COLORS.gridMinor
-      const alpha = isMajor ? 1 : 0.7
-      g.lineStyle(1, color, alpha)
-      const s = toScreen(worldLeft, wy)
-      const e = toScreen(worldRight, wy)
-      g.moveTo(s.x, s.y)
-      g.lineTo(e.x, e.y)
+      if (!isMajor) {
+        const s = toScreen(worldLeft, wy)
+        const e = toScreen(worldRight, wy)
+        g.moveTo(s.x, s.y)
+        g.lineTo(e.x, e.y)
+      }
     }
+    g.stroke({ color: COLORS.gridMinor, width: 1, alpha: 0.7 })
+
+    // Major grid lines batched together
+    for (let wx = startX; wx <= worldRight; wx += GRID_MINOR) {
+      const isMajor = Math.abs(wx % GRID_MAJOR) < 0.001 || Math.abs(wx % GRID_MAJOR - GRID_MAJOR) < 0.001
+      if (isMajor) {
+        const s = toScreen(wx, worldTop)
+        const e = toScreen(wx, worldBottom)
+        g.moveTo(s.x, s.y)
+        g.lineTo(e.x, e.y)
+      }
+    }
+    for (let wy = startY; wy <= worldBottom; wy += GRID_MINOR) {
+      const isMajor = Math.abs(wy % GRID_MAJOR) < 0.001 || Math.abs(wy % GRID_MAJOR - GRID_MAJOR) < 0.001
+      if (isMajor) {
+        const s = toScreen(worldLeft, wy)
+        const e = toScreen(worldRight, wy)
+        g.moveTo(s.x, s.y)
+        g.lineTo(e.x, e.y)
+      }
+    }
+    g.stroke({ color: COLORS.gridMajor, width: 1, alpha: 1 })
 
     // Origin cross
     const os = toScreen(0, 0)
-    g.lineStyle(1, 0x4ea1ff, 0.3)
     g.moveTo(os.x - 10, os.y)
     g.lineTo(os.x + 10, os.y)
     g.moveTo(os.x, os.y - 10)
     g.lineTo(os.x, os.y + 10)
+    g.stroke({ color: 0x4ea1ff, width: 1, alpha: 0.3 })
   }
 
   private renderObjects(
@@ -399,14 +422,13 @@ export class PixiRenderer {
       const rw = s2.x - s1.x
       const rh = s2.y - s1.y
 
-      g.lineStyle(1, lineColor, 0.9)
-      g.beginFill(fillColor, 0.85)
-      g.drawRect(s1.x, s1.y, rw, rh)
-      g.endFill()
+      g.rect(s1.x, s1.y, rw, rh)
+      g.fill({ color: fillColor, alpha: 0.85 })
+      g.stroke({ color: lineColor, width: 1, alpha: 0.9 })
 
       if (selected) {
-        g.lineStyle(2, COLORS.selection, 1)
-        g.drawRect(s1.x - 1, s1.y - 1, rw + 2, rh + 2)
+        g.rect(s1.x - 1, s1.y - 1, rw + 2, rh + 2)
+        g.stroke({ color: COLORS.selection, width: 2, alpha: 1 })
       }
       this.objectLayer.addChild(g)
     }
@@ -416,21 +438,22 @@ export class PixiRenderer {
       const s = toScreen(x, y)
       const r = Math.max(6, 12 * zoom)
 
-      g.lineStyle(1, COLORS.prop, 0.9)
-      g.beginFill(COLORS.propFill, 0.85)
-      g.drawCircle(s.x, s.y, r)
-      g.endFill()
+      g.circle(s.x, s.y, r)
+      g.fill({ color: COLORS.propFill, alpha: 0.85 })
+      g.stroke({ color: COLORS.prop, width: 1, alpha: 0.9 })
 
       if (selected) {
-        g.lineStyle(2, COLORS.selection, 1)
-        g.drawCircle(s.x, s.y, r + 2)
+        g.circle(s.x, s.y, r + 2)
+        g.stroke({ color: COLORS.selection, width: 2, alpha: 1 })
       }
 
-      // Label
-      const label = new PIXI.Text(assetId, {
-        fontSize: Math.max(8, 10 * zoom),
-        fill: 0xc8cdd4,
-        fontFamily: "system-ui",
+      const label = new PIXI.Text({
+        text: assetId,
+        style: {
+          fontSize: Math.max(8, 10 * zoom),
+          fill: 0xc8cdd4,
+          fontFamily: "system-ui",
+        },
       })
       label.x = s.x - label.width / 2
       label.y = s.y + r + 2
@@ -454,11 +477,12 @@ export class PixiRenderer {
 
   destroy() {
     this.unsub()
-    const view = this.app.view as HTMLCanvasElement
-    view.removeEventListener("wheel", this.onWheel)
-    view.removeEventListener("mousedown", this.onMouseDown)
-    view.removeEventListener("mousemove", this.onMouseMove)
-    view.removeEventListener("mouseup", this.onMouseUp)
-    this.app.destroy(false)
+    const canvas = this.app.canvas
+    canvas.removeEventListener("wheel", this.onWheel)
+    canvas.removeEventListener("mousedown", this.onMouseDown)
+    canvas.removeEventListener("mousemove", this.onMouseMove)
+    canvas.removeEventListener("mouseup", this.onMouseUp)
+    canvas.parentNode?.removeChild(canvas)
+    this.app.destroy()
   }
 }

@@ -2,33 +2,35 @@ import { useEffect, useRef } from "react"
 import { PixiRenderer } from "../renderer/PixiRenderer"
 
 export function Viewport() {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<PixiRenderer | null>(null)
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
+    const container = containerRef.current
+    if (!container) return
 
-    const renderer = new PixiRenderer(canvas)
-    rendererRef.current = renderer
+    let cancelled = false
+
+    PixiRenderer.create(container).then(renderer => {
+      if (cancelled) {
+        renderer.destroy()
+        return
+      }
+      rendererRef.current = renderer
+    })
 
     const handleResize = () => {
-      renderer.render()
+      rendererRef.current?.render()
     }
     window.addEventListener("resize", handleResize)
 
     return () => {
+      cancelled = true
       window.removeEventListener("resize", handleResize)
-      renderer.destroy()
+      rendererRef.current?.destroy()
       rendererRef.current = null
     }
   }, [])
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className="w-full h-full block"
-      style={{ cursor: "crosshair" }}
-    />
-  )
+  return <div ref={containerRef} className="w-full h-full" />
 }
