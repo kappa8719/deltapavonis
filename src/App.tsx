@@ -28,7 +28,7 @@ export default function App() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel: Hierarchy + Assets */}
-        <div className="w-[216px] shrink-0 bg-panel border-r border-border overflow-hidden flex flex-col">
+        <div className="w-[248px] shrink-0 bg-panel border-r border-border overflow-hidden flex flex-col">
           <Hierarchy />
           <AssetBrowser />
         </div>
@@ -39,7 +39,7 @@ export default function App() {
         </div>
 
         {/* Right panel: Inspector */}
-        <div className="w-[220px] shrink-0 bg-panel border-l border-border overflow-hidden flex flex-col">
+        <div className="w-[256px] shrink-0 bg-panel border-l border-border overflow-hidden flex flex-col">
           <Inspector />
         </div>
       </div>

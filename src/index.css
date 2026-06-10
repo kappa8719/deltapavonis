@@ -15,12 +15,13 @@ html, body, #root {
   background: #111315;
   color: #c8cdd4;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.4;
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -43,14 +44,14 @@ input[type="number"]::-webkit-outer-spin-button {
 
 input[type="checkbox"] {
   accent-color: #4ea1ff;
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
 }
 
 select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7684' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7684' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 6px center;
+  background-position: right 8px center;
   appearance: none;
-  padding-right: 22px !important;
+  padding-right: 28px !important;
 }

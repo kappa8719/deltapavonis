@@ -4,11 +4,11 @@ import { useEditorStore } from "../store"
 
 function ScaleGuide() {
   return (
-    <div className="absolute top-4 right-4 bg-bg/90 border border-[#c8a840] rounded px-3 py-2 text-xs pointer-events-none z-10 select-none"
-      style={{ minWidth: 160 }}
+    <div className="absolute top-5 right-5 bg-bg/90 border border-[#c8a840] rounded-md px-4 py-3 text-sm pointer-events-none z-10 select-none"
+      style={{ minWidth: 196 }}
     >
-      <div className="text-[#c8a840] font-semibold mb-1.5 text-[11px]">[ 스케일 가이드 ]</div>
-      <div className="text-text-dim space-y-0.5">
+      <div className="text-[#c8a840] font-semibold mb-2 text-xs">[ 스케일 가이드 ]</div>
+      <div className="text-text-dim space-y-1">
         <div>1 unit = 10cm</div>
         <div>벽 두께: 8u (80cm)</div>
         <div>문 폭: 9u (90cm)</div>
@@ -26,25 +26,25 @@ function ScaleBar() {
   const halfPx = barPx / 2
 
   return (
-    <div className="absolute bottom-4 right-4 pointer-events-none z-10 select-none">
-      <div className="flex items-end gap-0 text-[10px] text-text-dim mb-0.5">
-        <span className="mr-0" style={{ marginRight: halfPx - 8 }}>0</span>
-        <span className="mr-0" style={{ marginRight: halfPx - 10 }}>5u</span>
+    <div className="absolute bottom-5 right-5 pointer-events-none z-10 select-none">
+      <div className="flex items-end gap-0 text-xs text-text-dim mb-1">
+        <span className="mr-0" style={{ marginRight: halfPx - 10 }}>0</span>
+        <span className="mr-0" style={{ marginRight: halfPx - 12 }}>5u</span>
         <span>10u</span>
       </div>
-      <div className="relative h-3" style={{ width: barPx }}>
+      <div className="relative h-4" style={{ width: barPx }}>
         {/* Bar background */}
         <div
-          className="absolute bottom-0 left-0 h-1.5 border border-[#c8a840] rounded-sm"
+          className="absolute bottom-0 left-0 h-2 border border-[#c8a840] rounded-sm"
           style={{ width: barPx, background: "transparent" }}
         />
         {/* Ticks */}
-        <div className="absolute bottom-1.5 left-0 w-px h-2 bg-[#c8a840]" />
-        <div className="absolute bottom-1.5 h-1.5 w-px bg-[#c8a840]" style={{ left: halfPx }} />
-        <div className="absolute bottom-1.5 right-0 w-px h-2 bg-[#c8a840]" />
+        <div className="absolute bottom-2 left-0 w-px h-2.5 bg-[#c8a840]" />
+        <div className="absolute bottom-2 h-2 w-px bg-[#c8a840]" style={{ left: halfPx }} />
+        <div className="absolute bottom-2 right-0 w-px h-2.5 bg-[#c8a840]" />
         {/* Fill halves */}
         <div
-          className="absolute bottom-0 left-0 h-1.5"
+          className="absolute bottom-0 left-0 h-2"
           style={{ width: halfPx, background: "#c8a840", opacity: 0.6 }}
         />
       </div>

@@ -44,22 +44,22 @@ export function Hierarchy() {
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 h-8 border-b border-border shrink-0">
-        <span className="text-[11px] font-semibold text-text-dim uppercase tracking-widest">Hierarchy</span>
+      <div className="flex items-center justify-between px-4 h-10 border-b border-border shrink-0">
+        <span className="text-xs font-semibold text-text-dim uppercase tracking-widest">Hierarchy</span>
         <button className="text-text-dim hover:text-text transition-colors">
-          <X size={12} />
+          <X size={13} />
         </button>
       </div>
 
       {/* Search */}
-      <div className="px-2 py-1.5 shrink-0">
-        <div className="flex items-center gap-1.5 bg-muted rounded px-2 py-1 border border-border/50">
-          <Search size={10} className="text-text-dim shrink-0" />
+      <div className="px-3 py-2 shrink-0">
+        <div className="flex items-center gap-2 bg-muted rounded-md px-3 py-2 border border-border/50">
+          <Search size={12} className="text-text-dim shrink-0" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search..."
-            className="flex-1 bg-transparent text-xs text-text placeholder-text-dim outline-none min-w-0"
+            className="flex-1 bg-transparent text-sm text-text placeholder-text-dim outline-none min-w-0"
           />
         </div>
       </div>
@@ -69,10 +69,10 @@ export function Hierarchy() {
         {/* World node */}
         <button
           onClick={() => setWorldOpen(v => !v)}
-          className="flex items-center w-full px-2 py-0.5 gap-1 text-xs text-text-dim hover:text-text hover:bg-muted"
+          className="flex items-center w-full px-3 py-1.5 gap-1.5 text-sm text-text-dim hover:text-text hover:bg-muted"
         >
-          {worldOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-          <Globe size={11} className="text-text-dim/70" />
+          {worldOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <Globe size={13} className="text-text-dim/70" />
           <span className="font-medium">World</span>
         </button>
 
@@ -81,17 +81,17 @@ export function Hierarchy() {
             {/* Room node */}
             <button
               onClick={() => setRoomOpen(v => !v)}
-              className="flex items-center w-full pl-5 pr-2 py-0.5 gap-1 text-xs text-text-dim hover:text-text hover:bg-muted"
+              className="flex items-center w-full pl-7 pr-3 py-1.5 gap-1.5 text-sm text-text-dim hover:text-text hover:bg-muted"
             >
-              {roomOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-              <Layers size={11} className="text-text-dim/70" />
+              {roomOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <Layers size={13} className="text-text-dim/70" />
               <span className="font-medium">Room_001</span>
             </button>
 
             {roomOpen && (
               <div>
                 {filtered.length === 0 && (
-                  <div className="pl-12 py-2 text-xs text-text-dim">
+                  <div className="pl-14 py-3 text-sm text-text-dim">
                     {search ? "No results" : "No objects"}
                   </div>
                 )}
@@ -103,13 +103,13 @@ export function Hierarchy() {
                       key={item.id}
                       onClick={() => setSelection([item.id])}
                       className={cn(
-                        "flex items-center w-full pl-9 pr-2 py-0.5 gap-1.5 text-xs truncate transition-colors",
+                        "flex items-center w-full pl-11 pr-3 py-1.5 gap-2 text-sm truncate transition-colors",
                         isSelected
                           ? "bg-accent/20 text-accent"
                           : "text-text hover:bg-muted"
                       )}
                     >
-                      <Icon size={10} className={isSelected ? "text-accent" : "text-text-dim"} />
+                      <Icon size={11} className={isSelected ? "text-accent" : "text-text-dim"} />
                       <span className="truncate">{item.name}</span>
                     </button>
                   )

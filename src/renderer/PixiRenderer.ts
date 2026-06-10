@@ -10,7 +10,7 @@ const GRID_MINOR = 5   // thin lines every 5u
 const GRID_MAJOR = 10  // thick lines every 10u
 
 // Ruler strip size in screen pixels
-const RULER = 20
+const RULER = 24
 
 const COLORS = {
   bg:          0x111315,
@@ -59,9 +59,6 @@ export class PixiRenderer {
 
   private isDrawing = false
   private drawStart = { worldX: 0, worldY: 0 }
-
-  // Reusable ruler text pool to avoid per-frame allocation
-  private rulerTextPool: PIXI.Text[] = []
 
   private constructor(app: PIXI.Application) {
     this.app = app
@@ -484,7 +481,7 @@ export class PixiRenderer {
     const drawProp = (x: number, y: number, assetId: string, selected: boolean) => {
       const g = new PIXI.Graphics()
       const s = toScreen(x, y)
-      const r = Math.max(6, 12 * zoom)
+      const r = Math.max(7, 13 * zoom)
 
       g.circle(s.x, s.y, r)
       g.fill({ color: COLORS.propFill, alpha: 0.88 })
@@ -497,7 +494,7 @@ export class PixiRenderer {
 
       const label = new PIXI.Text({
         text: assetId,
-        style: { fontSize: Math.max(8, 10 * zoom), fill: 0xc8cdd4, fontFamily: "system-ui" },
+        style: { fontSize: Math.max(10, 11 * zoom), fill: 0xc8cdd4, fontFamily: "system-ui" },
       })
       label.x = s.x - label.width / 2
       label.y = s.y + r + 2
@@ -539,7 +536,7 @@ export class PixiRenderer {
     const s2 = toScreen(x + w, y + h)
     const mx = (s1.x + s2.x) / 2
     const my = (s1.y + s2.y) / 2
-    const R = 4
+    const R = 5
 
     const handles = [
       { x: s1.x, y: s1.y }, { x: mx, y: s1.y }, { x: s2.x, y: s1.y },
@@ -556,7 +553,7 @@ export class PixiRenderer {
     // Dimension labels
     const pxW = Math.abs(s2.x - s1.x)
     const pxH = Math.abs(s2.y - s1.y)
-    const fontSize = Math.max(9, Math.min(12, 10 * zoom))
+    const fontSize = Math.max(10, Math.min(13, 11 * zoom))
 
     if (pxW > 20) {
       const wLabel = new PIXI.Text({
@@ -627,7 +624,7 @@ export class PixiRenderer {
     const worldBottom = (h - cy) / (zoom * PPU) - camY
 
     const labelStyle: Partial<PIXI.TextStyleOptions> = {
-      fontSize: 9,
+      fontSize: 10,
       fill: COLORS.rulerText,
       fontFamily: "system-ui",
     }
@@ -677,8 +674,6 @@ export class PixiRenderer {
 
     // Room label in canvas center area
     const { roomWidth, roomHeight } = useEditorStore.getState()
-    const halfW = roomWidth / 2
-    const halfH = roomHeight / 2
     const roomCenter = toScreen(0, 0)
 
     if (
@@ -688,11 +683,11 @@ export class PixiRenderer {
       const nameLabel = new PIXI.Text({
         text: `Room_001\n${roomWidth} x ${roomHeight} u`,
         style: {
-          fontSize: 11,
+          fontSize: 13,
           fill: 0x3a4450,
           fontFamily: "system-ui",
           align: "center",
-          lineHeight: 16,
+          lineHeight: 18,
         },
       })
       nameLabel.x = roomCenter.x - nameLabel.width / 2

@@ -16,7 +16,7 @@ export function StatusBar() {
     doc.props.length
 
   return (
-    <div className="flex items-center h-6 bg-panel border-t border-border px-3 gap-0 text-xs text-text-dim select-none shrink-0">
+    <div className="flex items-center h-8 bg-panel border-t border-border px-4 gap-0 text-sm text-text-dim select-none shrink-0">
       <Seg label="Mouse" value={`${mouseX}, ${mouseY}`} mono />
       <Sep />
       <Seg label="Grid" value={`${snapSize}u`} />
@@ -29,7 +29,7 @@ export function StatusBar() {
       <Sep />
       <Seg label="Room Size" value={`${roomWidth} x ${roomHeight} u`} />
       <div className="flex-1" />
-      <span className="text-text-dim/40 text-[11px]">
+      <span className="text-text-dim/40 text-xs">
         MMB drag: pan · wheel: zoom · Del: delete
       </span>
     </div>
@@ -38,7 +38,7 @@ export function StatusBar() {
 
 function Seg({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <span className="px-2">
+    <span className="px-2.5">
       <span className="text-text-dim">{label}:</span>{" "}
       <span className={`text-text${mono ? " font-mono" : ""}`}>{value}</span>
     </span>
