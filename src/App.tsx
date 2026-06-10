@@ -27,21 +27,21 @@ export default function App() {
       <Toolbar />
 
       <div className="flex flex-1 overflow-hidden">
-        <div className="w-48 shrink-0 bg-panel border-r border-border overflow-hidden flex flex-col">
+        {/* Left panel: Hierarchy + Assets */}
+        <div className="w-[216px] shrink-0 bg-panel border-r border-border overflow-hidden flex flex-col">
           <Hierarchy />
+          <AssetBrowser />
         </div>
 
+        {/* Main viewport */}
         <div className="flex-1 overflow-hidden relative bg-bg">
           <Viewport />
         </div>
 
-        <div className="w-52 shrink-0 bg-panel border-l border-border overflow-hidden flex flex-col">
+        {/* Right panel: Inspector */}
+        <div className="w-[220px] shrink-0 bg-panel border-l border-border overflow-hidden flex flex-col">
           <Inspector />
         </div>
-      </div>
-
-      <div className="h-9 shrink-0 bg-panel">
-        <AssetBrowser />
       </div>
 
       <StatusBar />
