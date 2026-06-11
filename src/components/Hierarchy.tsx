@@ -1,49 +1,67 @@
+import { useState } from "react"
+import {
+  AppWindow,
+  Box,
+  ChevronDown,
+  ChevronRight,
+  DoorOpen,
+  Globe,
+  Layers,
+  Search,
+  Square,
+  X,
+} from "lucide-react"
 import { useEditorStore } from "../store"
 import { cn } from "../lib/utils"
-import {
-  ChevronDown, ChevronRight, X, Search,
-  Globe, Layers, Square, DoorOpen, AppWindow, Box,
-} from "lucide-react"
-import { useState } from "react"
-import type { MapDocument } from "../types"
 
-type GroupConfig = {
-  key: keyof MapDocument
-  prefix: string
-  icon: React.FC<{ size?: number; className?: string }>
+type Item = {
+  id: string
+  name: string
+  type: "wall" | "door" | "window" | "prop"
 }
 
-const GROUPS: GroupConfig[] = [
-  { key: "walls",   prefix: "Wall",   icon: Square },
-  { key: "doors",   prefix: "Door",   icon: DoorOpen },
-  { key: "windows", prefix: "Window", icon: AppWindow },
-  { key: "props",   prefix: "Prop",   icon: Box },
-]
+const ICONS = {
+  wall: Square,
+  door: DoorOpen,
+  window: AppWindow,
+  prop: Box,
+} satisfies Record<Item["type"], React.FC<{ size?: number; className?: string }>>
 
 export function Hierarchy() {
-  const document = useEditorStore(s => s.document)
-  const selection = useEditorStore(s => s.selection)
-  const setSelection = useEditorStore(s => s.setSelection)
-  const getObjectName = useEditorStore(s => s.getObjectName)
+  const document = useEditorStore(state => state.document)
+  const selection = useEditorStore(state => state.selection)
+  const setSelection = useEditorStore(state => state.setSelection)
+  const getObjectName = useEditorStore(state => state.getObjectName)
   const [search, setSearch] = useState("")
   const [worldOpen, setWorldOpen] = useState(true)
   const [roomOpen, setRoomOpen] = useState(true)
 
-  const allItems = GROUPS.flatMap(g =>
-    (document[g.key] as { id: string }[]).map(item => ({
-      id: item.id,
-      name: getObjectName(item.id),
-      icon: g.icon,
-    }))
-  )
+  const items: Item[] = [
+    ...document.walls.map(wall => ({
+      id: wall.id,
+      name: getObjectName(wall.id),
+      type: "wall" as const,
+    })),
+    ...document.walls.flatMap(wall =>
+      wall.openings.map(opening => ({
+        id: opening.id,
+        name: getObjectName(opening.id),
+        type: opening.kind,
+      }))
+    ),
+    ...document.props.map(prop => ({
+      id: prop.id,
+      name: getObjectName(prop.id),
+      type: "prop" as const,
+    })),
+  ]
 
   const filtered = search
-    ? allItems.filter(item => item.name.toLowerCase().includes(search.toLowerCase()))
-    : allItems
+    ? items.filter(item => item.name.toLowerCase().includes(search.toLowerCase()))
+    : items
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 h-10 border-b border-border shrink-0">
         <span className="text-xs font-semibold text-text-dim uppercase tracking-widest">Hierarchy</span>
         <button className="text-text-dim hover:text-text transition-colors">
@@ -51,24 +69,21 @@ export function Hierarchy() {
         </button>
       </div>
 
-      {/* Search */}
       <div className="px-3 py-2 shrink-0">
         <div className="flex items-center gap-2 bg-muted rounded-md px-3 py-2 border border-border/50">
           <Search size={12} className="text-text-dim shrink-0" />
           <input
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={event => setSearch(event.target.value)}
             placeholder="Search..."
             className="flex-1 bg-transparent text-sm text-text placeholder-text-dim outline-none min-w-0"
           />
         </div>
       </div>
 
-      {/* Tree */}
       <div className="flex-1 overflow-y-auto py-0.5">
-        {/* World node */}
         <button
-          onClick={() => setWorldOpen(v => !v)}
+          onClick={() => setWorldOpen(value => !value)}
           className="flex items-center w-full px-3 py-1.5 gap-1.5 text-sm text-text-dim hover:text-text hover:bg-muted"
         >
           {worldOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -78,9 +93,8 @@ export function Hierarchy() {
 
         {worldOpen && (
           <>
-            {/* Room node */}
             <button
-              onClick={() => setRoomOpen(v => !v)}
+              onClick={() => setRoomOpen(value => !value)}
               className="flex items-center w-full pl-7 pr-3 py-1.5 gap-1.5 text-sm text-text-dim hover:text-text hover:bg-muted"
             >
               {roomOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -95,18 +109,18 @@ export function Hierarchy() {
                     {search ? "No results" : "No objects"}
                   </div>
                 )}
+
                 {filtered.map(item => {
-                  const Icon = item.icon
+                  const Icon = ICONS[item.type]
                   const isSelected = selection.includes(item.id)
+
                   return (
                     <button
                       key={item.id}
                       onClick={() => setSelection([item.id])}
                       className={cn(
                         "flex items-center w-full pl-11 pr-3 py-1.5 gap-2 text-sm truncate transition-colors",
-                        isSelected
-                          ? "bg-accent/20 text-accent"
-                          : "text-text hover:bg-muted"
+                        isSelected ? "bg-accent/20 text-accent" : "text-text hover:bg-muted"
                       )}
                     >
                       <Icon size={11} className={isSelected ? "text-accent" : "text-text-dim"} />

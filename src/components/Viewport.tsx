@@ -12,6 +12,7 @@ function ScaleGuide() {
         <div>1 unit = 10cm</div>
         <div>벽 두께: 8u (80cm)</div>
         <div>문 폭: 9u (90cm)</div>
+        <div>창 폭: 6u (60cm)</div>
         <div>캐릭터 반경: 3u (30cm)</div>
       </div>
     </div>

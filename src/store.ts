@@ -1,40 +1,107 @@
 import { create } from "zustand"
 import { v4 as uuid } from "uuid"
-import type { MapDocument, ActiveTool, Wall, Door, Window, Prop } from "./types"
+import {
+  DEFAULT_DOOR_WIDTH,
+  DEFAULT_WALL_THICKNESS,
+} from "./lib/map-geometry"
+import {
+  getObject,
+  getWallByOpeningId,
+  getOpeningCount,
+} from "./types"
+import type {
+  ActiveTool,
+  MapDocument,
+  ObjectPatch,
+  Prop,
+  Wall,
+  WallOpening,
+  WallOpeningKind,
+} from "./types"
 
-// Initial room: 100x100u centered at origin, walls 8u thick
-const w1 = uuid(), w2 = uuid(), w3 = uuid()
-const d1 = uuid(), d2 = uuid()
-const win1 = uuid()
-const p1 = uuid()
+function createDefaultRoom({ size, wallThickness }: { size: number; wallThickness: number }) {
+  const half = size / 2
 
-const initialDocument: MapDocument = {
-  walls: [
-    { id: w1, x: -50, y: -50, width: 8, height: 100 },   // left wall
-    { id: w2, x: 42,  y: -50, width: 8, height: 100 },   // right wall
-    { id: w3, x: -50, y: -50, width: 100, height: 8 },   // top wall
-  ],
-  doors: [
-    { id: d1, x: -50, y: 20,  width: 8, height: 18 },    // door in left wall
-    { id: d2, x: -10, y: 42,  width: 18, height: 8 },    // door in bottom
-  ],
-  windows: [
-    { id: win1, x: 10, y: -50, width: 18, height: 8 },   // window in top wall
-  ],
-  props: [
-    { id: p1, x: 10, y: 10, assetId: "locker" },
-  ],
+  const wallIds = {
+    top: uuid(),
+    right: uuid(),
+    bottom: uuid(),
+    left: uuid(),
+  }
+  const doorId = uuid()
+  const propId = uuid()
+
+  const document: MapDocument = {
+    walls: [
+      {
+        id: wallIds.top,
+        kind: "wall",
+        start: { x: -half, y: -half },
+        end: { x: half, y: -half },
+        thickness: wallThickness,
+        openings: [],
+      },
+      {
+        id: wallIds.right,
+        kind: "wall",
+        start: { x: half, y: -half },
+        end: { x: half, y: half },
+        thickness: wallThickness,
+        openings: [],
+      },
+      {
+        id: wallIds.bottom,
+        kind: "wall",
+        start: { x: -half, y: half },
+        end: { x: half, y: half },
+        thickness: wallThickness,
+        openings: [
+          {
+            id: doorId,
+            kind: "door",
+            offset: size / 2,
+            width: DEFAULT_DOOR_WIDTH,
+          },
+        ],
+      },
+      {
+        id: wallIds.left,
+        kind: "wall",
+        start: { x: -half, y: half },
+        end: { x: -half, y: -half },
+        thickness: wallThickness,
+        openings: [],
+      },
+    ],
+    props: [
+      { id: propId, kind: "prop", x: 10, y: 10, assetId: "locker" },
+    ],
+  }
+
+  const names: Record<string, string> = {
+    [wallIds.top]: "Wall_001",
+    [wallIds.right]: "Wall_002",
+    [wallIds.bottom]: "Wall_003",
+    [wallIds.left]: "Wall_004",
+    [doorId]: "Door_001",
+    [propId]: "Prop_001",
+  }
+
+  return {
+    document,
+    names,
+    counters: { wall: 4, door: 1, window: 0, prop: 1 },
+    roomWidth: size,
+    roomHeight: size,
+  }
 }
 
-const initialNames: Record<string, string> = {
-  [w1]: "Wall_001",
-  [w2]: "Wall_002",
-  [w3]: "Wall_003",
-  [d1]: "Door_001",
-  [d2]: "Door_002",
-  [win1]: "Window_001",
-  [p1]: "Prop_001",
-}
+const initialState = createDefaultRoom({
+  size: 100,
+  wallThickness: DEFAULT_WALL_THICKNESS,
+})
+
+type OpeningDraft = Omit<WallOpening, "id" | "kind">
 
 type EditorStore = {
   document: MapDocument
@@ -59,20 +126,26 @@ type EditorStore = {
   setSelection: (ids: string[]) => void
   toggleSelection: (id: string) => void
   setSnapSize: (size: number) => void
-  setGridVisible: (v: boolean) => void
+  setGridVisible: (visible: boolean) => void
 
-  addWall: (wall: Omit<Wall, "id">) => string
-  addDoor: (door: Omit<Door, "id">) => string
-  addWindow: (win: Omit<Window, "id">) => string
-  addProp: (prop: Omit<Prop, "id">) => string
+  addWall: (wall: Omit<Wall, "id" | "kind">) => string
+  addDoor: (wallId: string, door: OpeningDraft) => string | null
+  addWindow: (wallId: string, win: OpeningDraft) => string | null
+  addProp: (prop: Omit<Prop, "id" | "kind">) => string
 
-  updateObject: (id: string, patch: Partial<Wall & Door & Window & Prop>) => void
+  updateObject: (id: string, patch: ObjectPatch) => void
   deleteSelected: () => void
   getObjectName: (id: string) => string
+  getObjectCount: () => number
+}
+
+function createOpeningName(kind: WallOpeningKind, counter: number) {
+  const label = kind === "door" ? "Door" : "Window"
+  return `${label}_${String(counter).padStart(3, "0")}`
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
-  document: initialDocument,
+  document: initialState.document,
   selection: [],
   activeTool: "select",
   zoom: 1,
@@ -82,10 +155,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   mouseY: 0,
   snapSize: 5,
   gridVisible: true,
-  roomWidth: 100,
-  roomHeight: 100,
-  names: initialNames,
-  counters: { wall: 3, door: 2, window: 1, prop: 1 },
+  roomWidth: initialState.roomWidth,
+  roomHeight: initialState.roomHeight,
+  names: initialState.names,
+  counters: initialState.counters,
 
   setActiveTool: tool => set({ activeTool: tool }),
   setZoom: zoom => set({ zoom }),
@@ -93,84 +166,207 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setMouse: (x, y) => set({ mouseX: x, mouseY: y }),
   setSelection: ids => set({ selection: ids }),
   toggleSelection: id => {
-    const sel = get().selection
-    set({ selection: sel.includes(id) ? sel.filter(s => s !== id) : [...sel, id] })
+    const selection = get().selection
+    set({
+      selection: selection.includes(id)
+        ? selection.filter(candidate => candidate !== id)
+        : [...selection, id],
+    })
   },
   setSnapSize: size => set({ snapSize: Math.max(1, size) }),
-  setGridVisible: v => set({ gridVisible: v }),
+  setGridVisible: visible => set({ gridVisible: visible }),
 
   addWall: wall => {
     const id = uuid()
-    const counter = (get().counters["wall"] || 0) + 1
+    const counter = (get().counters.wall || 0) + 1
     const name = `Wall_${String(counter).padStart(3, "0")}`
-    set(s => ({
-      document: { ...s.document, walls: [...s.document.walls, { id, ...wall }] },
-      names: { ...s.names, [id]: name },
-      counters: { ...s.counters, wall: counter },
+    set(state => ({
+      document: {
+        ...state.document,
+        walls: [...state.document.walls, { id, kind: "wall", ...wall }],
+      },
+      names: { ...state.names, [id]: name },
+      counters: { ...state.counters, wall: counter },
     }))
     return id
   },
-  addDoor: door => {
+  addDoor: (wallId, door) => {
+    const wall = get().document.walls.find(candidate => candidate.id === wallId)
+    if (!wall) return null
+
     const id = uuid()
-    const counter = (get().counters["door"] || 0) + 1
-    const name = `Door_${String(counter).padStart(3, "0")}`
-    set(s => ({
-      document: { ...s.document, doors: [...s.document.doors, { id, ...door }] },
-      names: { ...s.names, [id]: name },
-      counters: { ...s.counters, door: counter },
+    const counter = (get().counters.door || 0) + 1
+    const name = createOpeningName("door", counter)
+
+    set(state => ({
+      document: {
+        ...state.document,
+        walls: state.document.walls.map(candidate =>
+          candidate.id === wallId
+            ? { ...candidate, openings: [...candidate.openings, { id, kind: "door", ...door }] }
+            : candidate
+        ),
+      },
+      names: { ...state.names, [id]: name },
+      counters: { ...state.counters, door: counter },
     }))
+
     return id
   },
-  addWindow: win => {
+  addWindow: (wallId, win) => {
+    const wall = get().document.walls.find(candidate => candidate.id === wallId)
+    if (!wall) return null
+
     const id = uuid()
-    const counter = (get().counters["window"] || 0) + 1
-    const name = `Window_${String(counter).padStart(3, "0")}`
-    set(s => ({
-      document: { ...s.document, windows: [...s.document.windows, { id, ...win }] },
-      names: { ...s.names, [id]: name },
-      counters: { ...s.counters, window: counter },
+    const counter = (get().counters.window || 0) + 1
+    const name = createOpeningName("window", counter)
+
+    set(state => ({
+      document: {
+        ...state.document,
+        walls: state.document.walls.map(candidate =>
+          candidate.id === wallId
+            ? { ...candidate, openings: [...candidate.openings, { id, kind: "window", ...win }] }
+            : candidate
+        ),
+      },
+      names: { ...state.names, [id]: name },
+      counters: { ...state.counters, window: counter },
     }))
+
     return id
   },
   addProp: prop => {
     const id = uuid()
-    const counter = (get().counters["prop"] || 0) + 1
+    const counter = (get().counters.prop || 0) + 1
     const name = `Prop_${String(counter).padStart(3, "0")}`
-    set(s => ({
-      document: { ...s.document, props: [...s.document.props, { id, ...prop }] },
-      names: { ...s.names, [id]: name },
-      counters: { ...s.counters, prop: counter },
+    set(state => ({
+      document: {
+        ...state.document,
+        props: [...state.document.props, { id, kind: "prop", ...prop }],
+      },
+      names: { ...state.names, [id]: name },
+      counters: { ...state.counters, prop: counter },
     }))
     return id
   },
 
   updateObject: (id, patch) => {
-    set(s => {
-      const doc = s.document
-      if (doc.walls.find(o => o.id === id))
-        return { document: { ...doc, walls: doc.walls.map(o => o.id === id ? { ...o, ...patch } : o) } }
-      if (doc.doors.find(o => o.id === id))
-        return { document: { ...doc, doors: doc.doors.map(o => o.id === id ? { ...o, ...patch } : o) } }
-      if (doc.windows.find(o => o.id === id))
-        return { document: { ...doc, windows: doc.windows.map(o => o.id === id ? { ...o, ...patch } : o) } }
-      if (doc.props.find(o => o.id === id))
-        return { document: { ...doc, props: doc.props.map(o => o.id === id ? { ...o, ...patch } : o) } }
+    set(state => {
+      const wall = state.document.walls.find(candidate => candidate.id === id)
+      if (wall) {
+        return {
+          document: {
+            ...state.document,
+            walls: state.document.walls.map(candidate =>
+              candidate.id === id
+                ? {
+                  ...candidate,
+                  start: patch.start ?? candidate.start,
+                  end: patch.end ?? candidate.end,
+                  thickness: patch.thickness ?? candidate.thickness,
+                }
+                : candidate
+            ),
+          },
+        }
+      }
+
+      const openingWall = getWallByOpeningId(state.document, id)
+      if (openingWall) {
+        return {
+          document: {
+            ...state.document,
+            walls: state.document.walls.map(candidate =>
+              candidate.id === openingWall.id
+                ? {
+                  ...candidate,
+                  openings: candidate.openings.map(opening =>
+                    opening.id === id
+                      ? {
+                        ...opening,
+                        offset: patch.offset ?? opening.offset,
+                        width: patch.width ?? opening.width,
+                      }
+                      : opening
+                  ),
+                }
+                : candidate
+            ),
+          },
+        }
+      }
+
+      if (state.document.props.some(candidate => candidate.id === id)) {
+        return {
+          document: {
+            ...state.document,
+            props: state.document.props.map(candidate =>
+              candidate.id === id
+                ? {
+                  ...candidate,
+                  x: patch.x ?? candidate.x,
+                  y: patch.y ?? candidate.y,
+                  assetId: patch.assetId ?? candidate.assetId,
+                }
+                : candidate
+            ),
+          },
+        }
+      }
+
       return {}
     })
   },
 
   deleteSelected: () => {
-    const ids = new Set(get().selection)
-    set(s => ({
-      selection: [],
-      document: {
-        walls: s.document.walls.filter(o => !ids.has(o.id)),
-        doors: s.document.doors.filter(o => !ids.has(o.id)),
-        windows: s.document.windows.filter(o => !ids.has(o.id)),
-        props: s.document.props.filter(o => !ids.has(o.id)),
-      },
-    }))
+    const selectedIds = new Set(get().selection)
+
+    set(state => {
+      const deletedIds = new Set<string>()
+      const walls = state.document.walls.flatMap(wall => {
+        if (selectedIds.has(wall.id)) {
+          deletedIds.add(wall.id)
+          wall.openings.forEach(opening => deletedIds.add(opening.id))
+          return []
+        }
+
+        const openings = wall.openings.filter(opening => {
+          const shouldDelete = selectedIds.has(opening.id)
+          if (shouldDelete) deletedIds.add(opening.id)
+          return !shouldDelete
+        })
+
+        return [{ ...wall, openings }]
+      })
+
+      const props = state.document.props.filter(prop => {
+        const shouldDelete = selectedIds.has(prop.id)
+        if (shouldDelete) deletedIds.add(prop.id)
+        return !shouldDelete
+      })
+
+      const names = Object.fromEntries(
+        Object.entries(state.names).filter(([id]) => !deletedIds.has(id))
+      )
+
+      return {
+        selection: [],
+        document: { walls, props },
+        names,
+      }
+    })
   },
 
   getObjectName: id => get().names[id] || id.slice(0, 8),
+  getObjectCount: () => {
+    const document = get().document
+    return document.walls.length + getOpeningCount(document) + document.props.length
+  },
 }))
+
+export function getSelectedObject() {
+  const { document, selection } = useEditorStore.getState()
+  const selectedId = selection[0]
+  return selectedId ? getObject(document, selectedId) : null
+}

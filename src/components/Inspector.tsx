@@ -1,16 +1,29 @@
 import { useEditorStore } from "../store"
-import { getObject, getObjectType } from "../types"
-import type { Wall, Door, Window as MapWindow, Prop } from "../types"
 import { cn } from "../lib/utils"
+import {
+  canPlaceOpeningOnWall,
+  wallLength,
+} from "../lib/map-geometry"
+import {
+  getObject,
+  getWallByOpeningId,
+} from "../types"
+import type { MapDocument, ObjectPatch, Prop, Wall, WallOpeningObject } from "../types"
 
 function FieldRow({
-  label, value, onChange, unit, width = "w-14",
+  label,
+  value,
+  onChange,
+  unit,
+  width = "w-20",
+  readOnly = false,
 }: {
   label: string
   value: number
-  onChange: (v: number) => void
+  onChange?: (value: number) => void
   unit?: string
   width?: string
+  readOnly?: boolean
 }) {
   return (
     <div className="flex items-center gap-2 py-1">
@@ -18,10 +31,23 @@ function FieldRow({
       <input
         type="number"
         value={value}
-        onChange={e => onChange(Number(e.target.value))}
-        className="flex-1 bg-muted border border-border rounded-md px-3 py-1.5 text-sm text-text focus:outline-none focus:border-accent min-w-0"
+        readOnly={readOnly}
+        onChange={event => onChange?.(Number(event.target.value))}
+        className={cn(
+          "flex-1 bg-muted border border-border rounded-md px-3 py-1.5 text-sm text-text min-w-0",
+          readOnly ? "opacity-70 cursor-default" : "focus:outline-none focus:border-accent"
+        )}
       />
-      {unit && <span className="text-text-dim text-sm shrink-0 w-4">{unit}</span>}
+      {unit && <span className="text-text-dim text-sm shrink-0 w-6">{unit}</span>}
+    </div>
+  )
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2 py-1">
+      <span className="text-text-dim text-sm shrink-0 w-20">{label}</span>
+      <span className="text-sm text-text">{value}</span>
     </div>
   )
 }
@@ -34,130 +60,172 @@ function SectionHeader({ title }: { title: string }) {
   )
 }
 
-export function Inspector() {
-  const document = useEditorStore(s => s.document)
-  const selection = useEditorStore(s => s.selection)
-  const updateObject = useEditorStore(s => s.updateObject)
-  const deleteSelected = useEditorStore(s => s.deleteSelected)
-  const getObjectName = useEditorStore(s => s.getObjectName)
+function updateWall(
+  wall: Wall,
+  patch: ObjectPatch,
+  updateObject: (id: string, patch: ObjectPatch) => void
+) {
+  updateObject(wall.id, {
+    start: patch.start ?? wall.start,
+    end: patch.end ?? wall.end,
+    thickness: patch.thickness ?? wall.thickness,
+  })
+}
 
-  const id = selection[0]
-  const obj = id ? getObject(document, id) : null
-  const type = id ? getObjectType(document, id) : null
-  const name = id ? getObjectName(id) : null
+function OpeningInspector({
+  document,
+  opening,
+  getObjectName,
+  updateObject,
+}: {
+  document: MapDocument
+  opening: WallOpeningObject
+  getObjectName: (id: string) => string
+  updateObject: (id: string, patch: ObjectPatch) => void
+}) {
+  const wall = getWallByOpeningId(document, opening.id)
+  if (!wall) return null
 
-  const update = (patch: Partial<Wall & Door & MapWindow & Prop>) => {
-    if (id) updateObject(id, patch)
+  const updateOpening = (patch: Partial<Pick<WallOpeningObject, "offset" | "width">>) => {
+    const nextWidth = patch.width ?? opening.width
+    const nextOffset = patch.offset ?? opening.offset
+    if (!canPlaceOpeningOnWall(wall, { offset: nextOffset, width: nextWidth }, opening.id)) {
+      return
+    }
+    updateObject(opening.id, { offset: nextOffset, width: nextWidth })
   }
 
   return (
+    <>
+      <SectionHeader title="Opening" />
+      <div className="px-4 pb-2">
+        <InfoRow label="Type" value={opening.kind === "door" ? "Door" : "Window"} />
+        <InfoRow label="Attached" value={getObjectName(wall.id)} />
+        <FieldRow
+          label="Offset"
+          value={opening.offset}
+          onChange={value => updateOpening({ offset: value })}
+          unit="u"
+        />
+        <FieldRow
+          label="Width"
+          value={opening.width}
+          onChange={value => updateOpening({ width: Math.max(1, value) })}
+          unit="u"
+        />
+      </div>
+    </>
+  )
+}
+
+function WallInspector({
+  wall,
+  updateObject,
+}: {
+  wall: Wall
+  updateObject: (id: string, patch: ObjectPatch) => void
+}) {
+  return (
+    <>
+      <SectionHeader title="Wall" />
+      <div className="px-4 pb-2">
+        <FieldRow
+          label="Start X"
+          value={wall.start.x}
+          onChange={value => updateWall(wall, { start: { ...wall.start, x: value } }, updateObject)}
+          unit="u"
+        />
+        <FieldRow
+          label="Start Y"
+          value={wall.start.y}
+          onChange={value => updateWall(wall, { start: { ...wall.start, y: value } }, updateObject)}
+          unit="u"
+        />
+        <FieldRow
+          label="End X"
+          value={wall.end.x}
+          onChange={value => updateWall(wall, { end: { ...wall.end, x: value } }, updateObject)}
+          unit="u"
+        />
+        <FieldRow
+          label="End Y"
+          value={wall.end.y}
+          onChange={value => updateWall(wall, { end: { ...wall.end, y: value } }, updateObject)}
+          unit="u"
+        />
+        <FieldRow label="Length" value={Math.round(wallLength(wall) * 100) / 100} unit="u" readOnly />
+        <FieldRow
+          label="Thickness"
+          value={wall.thickness}
+          onChange={value => updateObject(wall.id, { thickness: Math.max(1, value) })}
+          unit="u"
+        />
+      </div>
+    </>
+  )
+}
+
+function PropInspector({
+  prop,
+  updateObject,
+}: {
+  prop: Prop
+  updateObject: (id: string, patch: ObjectPatch) => void
+}) {
+  return (
+    <>
+      <SectionHeader title="Prop" />
+      <div className="px-4 pb-2">
+        <FieldRow label="X" value={prop.x} onChange={value => updateObject(prop.id, { x: value })} unit="u" />
+        <FieldRow label="Y" value={prop.y} onChange={value => updateObject(prop.id, { y: value })} unit="u" />
+        <InfoRow label="Asset" value={prop.assetId} />
+      </div>
+    </>
+  )
+}
+
+export function Inspector() {
+  const document = useEditorStore(state => state.document)
+  const selection = useEditorStore(state => state.selection)
+  const updateObject = useEditorStore(state => state.updateObject)
+  const deleteSelected = useEditorStore(state => state.deleteSelected)
+  const getObjectName = useEditorStore(state => state.getObjectName)
+
+  const id = selection[0]
+  const object = id ? getObject(document, id) : null
+  const name = id ? getObjectName(id) : null
+
+  return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Header */}
       <div className="flex items-center px-4 h-10 border-b border-border shrink-0">
         <span className="text-xs font-semibold text-text-dim uppercase tracking-widest">Inspector</span>
       </div>
 
-      {!obj ? (
-        <div className="px-4 py-8 text-sm text-text-dim text-center">
-          Nothing selected
-        </div>
+      {!object ? (
+        <div className="px-4 py-8 text-sm text-text-dim text-center">Nothing selected</div>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          {/* Object name */}
           <div className="px-4 py-3 border-b border-border">
             <div className="text-base font-semibold text-accent">{name}</div>
           </div>
 
-          {/* Transform */}
-          <SectionHeader title="Transform" />
-          <div className="px-4 pb-2">
-            <FieldRow label="X" value={obj.x} onChange={v => update({ x: v })} unit="u" />
-            <FieldRow label="Y" value={obj.y} onChange={v => update({ y: v })} unit="u" />
-            {type !== "prop" && (
-              <>
-                <FieldRow
-                  label="W"
-                  value={(obj as Wall).width}
-                  onChange={v => update({ width: Math.max(1, v) })}
-                  unit="u"
-                />
-                <FieldRow
-                  label="H"
-                  value={(obj as Wall).height}
-                  onChange={v => update({ height: Math.max(1, v) })}
-                  unit="u"
-                />
-              </>
-            )}
-            <FieldRow label="R" value={0} onChange={() => {}} unit="°" />
-          </div>
-
-          {/* Appearance (walls/doors/windows only) */}
-          {type !== "prop" && (
-            <>
-              <div className="border-t border-border" />
-              <SectionHeader title="Appearance" />
-              <div className="px-4 pb-2">
-                <div className="flex items-center gap-2 py-1">
-                  <span className="text-text-dim text-sm w-16 shrink-0">Material</span>
-                  <select className="flex-1 bg-muted border border-border rounded-md px-3 py-1.5 text-sm text-text focus:outline-none focus:border-accent">
-                    <option>Concrete_A</option>
-                    <option>Concrete_B</option>
-                    <option>Wood_A</option>
-                    <option>Metal_A</option>
-                    <option>Brick_A</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 py-1">
-                  <span className="text-text-dim text-sm w-16 shrink-0">Color</span>
-                  <div className="flex-1 h-8 bg-[#6b7684] rounded-md border border-border cursor-pointer hover:border-accent transition-colors" />
-                </div>
-              </div>
-            </>
+          {object.kind === "wall" && (
+            <WallInspector wall={object} updateObject={updateObject} />
           )}
 
-          {/* Properties (walls/doors/windows only) */}
-          {type !== "prop" && (
-            <>
-              <div className="border-t border-border" />
-              <SectionHeader title="Properties" />
-              <div className="px-4 pb-2">
-                <div className="flex items-center gap-2 py-1">
-                  <span className="text-text-dim text-sm w-16 shrink-0">Thickness</span>
-                  <input
-                    type="number"
-                    defaultValue={type === "wall" ? (obj as Wall).width : 8}
-                    className="w-20 bg-muted border border-border rounded-md px-3 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
-                  />
-                  <span className="text-text-dim text-sm">u</span>
-                </div>
-                <div className="flex items-center gap-2 py-1">
-                  <span className="text-text-dim text-sm w-16 shrink-0">Collidable</span>
-                  <input type="checkbox" defaultChecked />
-                </div>
-                <div className="flex items-center gap-2 py-1">
-                  <span className="text-text-dim text-sm w-16 shrink-0">Visible</span>
-                  <input type="checkbox" defaultChecked />
-                </div>
-              </div>
-            </>
+          {(object.kind === "door" || object.kind === "window") && (
+            <OpeningInspector
+              document={document}
+              opening={object}
+              getObjectName={getObjectName}
+              updateObject={updateObject}
+            />
           )}
 
-          {/* Prop info */}
-          {type === "prop" && (
-            <>
-              <div className="border-t border-border" />
-              <SectionHeader title="Appearance" />
-              <div className="px-4 pb-2">
-                <div className="flex items-center gap-2 py-1">
-                  <span className="text-text-dim text-sm w-16 shrink-0">Asset</span>
-                  <span className="text-sm text-text">{(obj as Prop).assetId}</span>
-                </div>
-              </div>
-            </>
+          {object.kind === "prop" && (
+            <PropInspector prop={object} updateObject={updateObject} />
           )}
 
-          {/* Delete */}
           <div className="px-4 py-4 border-t border-border mt-1">
             <button
               onClick={deleteSelected}

@@ -1,29 +1,37 @@
+export type Vec2 = {
+  x: number
+  y: number
+}
+
+export type WallOpeningKind = "door" | "window"
+
+export type WallOpening = {
+  id: string
+  kind: WallOpeningKind
+  offset: number
+  width: number
+}
+
+export type Door = WallOpening & {
+  kind: "door"
+}
+
+export type Window = WallOpening & {
+  kind: "window"
+}
+
 export type Wall = {
   id: string
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export type Door = {
-  id: string
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export type Window = {
-  id: string
-  x: number
-  y: number
-  width: number
-  height: number
+  kind: "wall"
+  start: Vec2
+  end: Vec2
+  thickness: number
+  openings: WallOpening[]
 }
 
 export type Prop = {
   id: string
+  kind: "prop"
   x: number
   y: number
   assetId: string
@@ -31,31 +39,58 @@ export type Prop = {
 
 export type MapDocument = {
   walls: Wall[]
-  doors: Door[]
-  windows: Window[]
   props: Prop[]
 }
 
 export type ActiveTool = "select" | "wall" | "door" | "window" | "prop"
 
-export type MapObject = Wall | Door | Window | Prop
+export type WallOpeningObject = (Door | Window) & {
+  wallId: string
+}
+
+export type MapObject = Wall | WallOpeningObject | Prop
 
 export type ObjectType = "wall" | "door" | "window" | "prop"
 
+export type ObjectPatch = Partial<{
+  start: Vec2
+  end: Vec2
+  thickness: number
+  offset: number
+  width: number
+  x: number
+  y: number
+  assetId: string
+}>
+
 export function getObjectType(doc: MapDocument, id: string): ObjectType | null {
-  if (doc.walls.find(o => o.id === id)) return "wall"
-  if (doc.doors.find(o => o.id === id)) return "door"
-  if (doc.windows.find(o => o.id === id)) return "window"
-  if (doc.props.find(o => o.id === id)) return "prop"
-  return null
+  const obj = getObject(doc, id)
+  return obj?.kind ?? null
 }
 
 export function getObject(doc: MapDocument, id: string): MapObject | null {
-  return (
-    doc.walls.find(o => o.id === id) ||
-    doc.doors.find(o => o.id === id) ||
-    doc.windows.find(o => o.id === id) ||
-    doc.props.find(o => o.id === id) ||
-    null
-  )
+  const wall = doc.walls.find(candidate => candidate.id === id)
+  if (wall) return wall
+
+  for (const candidateWall of doc.walls) {
+    const opening = candidateWall.openings.find(candidate => candidate.id === id)
+    if (opening) return { ...opening, wallId: candidateWall.id } as WallOpeningObject
+  }
+
+  return doc.props.find(candidate => candidate.id === id) || null
+}
+
+export function getWallByOpeningId(doc: MapDocument, openingId: string): Wall | null {
+  return doc.walls.find(wall => wall.openings.some(opening => opening.id === openingId)) || null
+}
+
+export function getOpeningById(doc: MapDocument, openingId: string): WallOpeningObject | null {
+  const wall = getWallByOpeningId(doc, openingId)
+  if (!wall) return null
+  const opening = wall.openings.find(candidate => candidate.id === openingId)
+  return opening ? { ...opening, wallId: wall.id } as WallOpeningObject : null
+}
+
+export function getOpeningCount(doc: MapDocument) {
+  return doc.walls.reduce((count, wall) => count + wall.openings.length, 0)
 }

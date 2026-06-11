@@ -1,4 +1,5 @@
 import { useEditorStore } from "../store"
+import { getOpeningCount } from "../types"
 
 export function StatusBar() {
   const mouseX = useEditorStore(s => s.mouseX)
@@ -11,13 +12,12 @@ export function StatusBar() {
 
   const total =
     doc.walls.length +
-    doc.doors.length +
-    doc.windows.length +
+    getOpeningCount(doc) +
     doc.props.length
 
   return (
     <div className="flex items-center h-8 bg-panel border-t border-border px-4 gap-0 text-sm text-text-dim select-none shrink-0">
-      <Seg label="Mouse" value={`${mouseX}, ${mouseY}`} mono />
+      <Seg label="Mouse" value={`(${mouseX}, ${mouseY})`} mono />
       <Sep />
       <Seg label="Grid" value={`${snapSize}u`} />
       <Sep />
