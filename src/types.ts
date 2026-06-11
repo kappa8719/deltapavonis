@@ -37,9 +37,24 @@ export type Prop = {
   assetId: string
 }
 
+export type ReferenceImage = {
+  id: string
+  kind: "referenceImage"
+  src: string
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number
+  opacity: number
+  naturalWidth: number
+  naturalHeight: number
+}
+
 export type MapDocument = {
   walls: Wall[]
   props: Prop[]
+  referenceImages: ReferenceImage[]
 }
 
 export type ActiveTool = "select" | "wall" | "door" | "window" | "prop"
@@ -48,9 +63,9 @@ export type WallOpeningObject = (Door | Window) & {
   wallId: string
 }
 
-export type MapObject = Wall | WallOpeningObject | Prop
+export type MapObject = Wall | WallOpeningObject | Prop | ReferenceImage
 
-export type ObjectType = "wall" | "door" | "window" | "prop"
+export type ObjectType = "wall" | "door" | "window" | "prop" | "referenceImage"
 
 export type ObjectPatch = Partial<{
   start: Vec2
@@ -58,9 +73,13 @@ export type ObjectPatch = Partial<{
   thickness: number
   offset: number
   width: number
+  height: number
   x: number
   y: number
   assetId: string
+  src: string
+  rotation: number
+  opacity: number
 }>
 
 export function getObjectType(doc: MapDocument, id: string): ObjectType | null {
@@ -77,7 +96,10 @@ export function getObject(doc: MapDocument, id: string): MapObject | null {
     if (opening) return { ...opening, wallId: candidateWall.id } as WallOpeningObject
   }
 
-  return doc.props.find(candidate => candidate.id === id) || null
+  const prop = doc.props.find(candidate => candidate.id === id)
+  if (prop) return prop
+
+  return doc.referenceImages.find(candidate => candidate.id === id) || null
 }
 
 export function getWallByOpeningId(doc: MapDocument, openingId: string): Wall | null {

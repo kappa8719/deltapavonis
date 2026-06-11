@@ -2,7 +2,7 @@ import {
   MousePointer2, Square, DoorOpen, AppWindow, Box,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Maximize2,
   Grid3x3, ChevronUp, ChevronDown, Play, Settings,
-  ZoomIn, ZoomOut,
+  ZoomIn, ZoomOut, ImagePlus,
 } from "lucide-react"
 import { useEditorStore } from "../store"
 import type { ActiveTool } from "../types"
@@ -37,6 +37,48 @@ function IconBtn({ icon: Icon, title, onClick, active }: {
     >
       <Icon size={14} />
     </button>
+  )
+}
+
+function ReferenceImageImportButton() {
+  const addReferenceImage = useEditorStore(s => s.addReferenceImage)
+  const setSelection = useEditorStore(s => s.setSelection)
+
+  const handleImport = () => {
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = "image/*"
+    input.onchange = () => {
+      const file = input.files?.[0]
+      if (!file) return
+
+      const blobUrl = URL.createObjectURL(file)
+
+      const img = new Image()
+      img.onload = () => {
+        const nw = img.naturalWidth
+        const nh = img.naturalHeight
+        // 1 source pixel = 1 world unit, so width/height = natural pixel dimensions
+        const id = addReferenceImage({
+          src: blobUrl,
+          x: 0,
+          y: 0,
+          width: nw,
+          height: nh,
+          rotation: 0,
+          opacity: 0.5,
+          naturalWidth: nw,
+          naturalHeight: nh,
+        })
+        setSelection([id])
+      }
+      img.src = blobUrl
+    }
+    input.click()
+  }
+
+  return (
+    <IconBtn icon={ImagePlus} title="Import Reference Image" onClick={handleImport} />
   )
 }
 
@@ -83,6 +125,11 @@ export function Toolbar() {
           <span>{tool.label}</span>
         </button>
       ))}
+
+      <Divider />
+
+      {/* Import Reference Image */}
+      <ReferenceImageImportButton />
 
       <Divider />
 

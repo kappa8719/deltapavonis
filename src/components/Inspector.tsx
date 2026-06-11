@@ -8,7 +8,7 @@ import {
   getObject,
   getWallByOpeningId,
 } from "../types"
-import type { MapDocument, ObjectPatch, Prop, Wall, WallOpeningObject } from "../types"
+import type { MapDocument, ObjectPatch, Prop, ReferenceImage, Wall, WallOpeningObject } from "../types"
 
 function FieldRow({
   label,
@@ -184,6 +184,48 @@ function PropInspector({
   )
 }
 
+function ReferenceImageInspector({
+  image,
+  updateObject,
+}: {
+  image: ReferenceImage
+  updateObject: (id: string, patch: ObjectPatch) => void
+}) {
+  return (
+    <>
+      <SectionHeader title="Reference Image" />
+      <div className="px-4 pb-2">
+        <FieldRow label="X" value={image.x} onChange={value => updateObject(image.id, { x: value })} unit="u" />
+        <FieldRow label="Y" value={image.y} onChange={value => updateObject(image.id, { y: value })} unit="u" />
+        <FieldRow
+          label="Width"
+          value={image.width}
+          onChange={value => updateObject(image.id, { width: Math.max(1, value) })}
+          unit="u"
+        />
+        <FieldRow
+          label="Height"
+          value={image.height}
+          onChange={value => updateObject(image.id, { height: Math.max(1, value) })}
+          unit="u"
+        />
+        <FieldRow
+          label="Rotation"
+          value={image.rotation}
+          onChange={value => updateObject(image.id, { rotation: value })}
+          unit="°"
+        />
+        <FieldRow
+          label="Opacity"
+          value={Math.round(image.opacity * 100)}
+          onChange={value => updateObject(image.id, { opacity: Math.max(0, Math.min(1, value / 100)) })}
+          unit="%"
+        />
+      </div>
+    </>
+  )
+}
+
 export function Inspector() {
   const document = useEditorStore(state => state.document)
   const selection = useEditorStore(state => state.selection)
@@ -224,6 +266,10 @@ export function Inspector() {
 
           {object.kind === "prop" && (
             <PropInspector prop={object} updateObject={updateObject} />
+          )}
+
+          {object.kind === "referenceImage" && (
+            <ReferenceImageInspector image={object} updateObject={updateObject} />
           )}
 
           <div className="px-4 py-4 border-t border-border mt-1">

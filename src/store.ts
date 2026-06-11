@@ -14,6 +14,7 @@ import type {
   MapDocument,
   ObjectPatch,
   Prop,
+  ReferenceImage,
   Wall,
   WallOpening,
   WallOpeningKind,
@@ -76,6 +77,7 @@ function createDefaultRoom({ size, wallThickness }: { size: number; wallThicknes
     props: [
       { id: propId, kind: "prop", x: 10, y: 10, assetId: "locker" },
     ],
+    referenceImages: [],
   }
 
   const names: Record<string, string> = {
@@ -90,7 +92,7 @@ function createDefaultRoom({ size, wallThickness }: { size: number; wallThicknes
   return {
     document,
     names,
-    counters: { wall: 4, door: 1, window: 0, prop: 1 },
+    counters: { wall: 4, door: 1, window: 0, prop: 1, referenceImage: 0 },
     roomWidth: size,
     roomHeight: size,
   }
@@ -132,6 +134,7 @@ type EditorStore = {
   addDoor: (wallId: string, door: OpeningDraft) => string | null
   addWindow: (wallId: string, win: OpeningDraft) => string | null
   addProp: (prop: Omit<Prop, "id" | "kind">) => string
+  addReferenceImage: (img: Omit<ReferenceImage, "id" | "kind">) => string
 
   updateObject: (id: string, patch: ObjectPatch) => void
   deleteSelected: () => void
@@ -250,6 +253,23 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }))
     return id
   },
+  addReferenceImage: img => {
+    const id = uuid()
+    const counter = (get().counters.referenceImage || 0) + 1
+    const name = `Reference_${String(counter).padStart(3, "0")}`
+    set(state => ({
+      document: {
+        ...state.document,
+        referenceImages: [
+          ...state.document.referenceImages,
+          { id, kind: "referenceImage", ...img },
+        ],
+      },
+      names: { ...state.names, [id]: name },
+      counters: { ...state.counters, referenceImage: counter },
+    }))
+    return id
+  },
 
   updateObject: (id, patch) => {
     set(state => {
@@ -315,6 +335,28 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         }
       }
 
+      if (state.document.referenceImages.some(candidate => candidate.id === id)) {
+        return {
+          document: {
+            ...state.document,
+            referenceImages: state.document.referenceImages.map(candidate =>
+              candidate.id === id
+                ? {
+                  ...candidate,
+                  x: patch.x ?? candidate.x,
+                  y: patch.y ?? candidate.y,
+                  width: patch.width ?? candidate.width,
+                  height: patch.height ?? candidate.height,
+                  rotation: patch.rotation ?? candidate.rotation,
+                  opacity: patch.opacity ?? candidate.opacity,
+                  src: patch.src ?? candidate.src,
+                }
+                : candidate
+            ),
+          },
+        }
+      }
+
       return {}
     })
   },
@@ -346,13 +388,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         return !shouldDelete
       })
 
+      const referenceImages = state.document.referenceImages.filter(img => {
+        const shouldDelete = selectedIds.has(img.id)
+        if (shouldDelete) deletedIds.add(img.id)
+        return !shouldDelete
+      })
+
       const names = Object.fromEntries(
         Object.entries(state.names).filter(([id]) => !deletedIds.has(id))
       )
 
       return {
         selection: [],
-        document: { walls, props },
+        document: { walls, props, referenceImages },
         names,
       }
     })
@@ -361,7 +409,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   getObjectName: id => get().names[id] || id.slice(0, 8),
   getObjectCount: () => {
     const document = get().document
-    return document.walls.length + getOpeningCount(document) + document.props.length
+    return document.walls.length + getOpeningCount(document) + document.props.length + document.referenceImages.length
   },
 }))
 

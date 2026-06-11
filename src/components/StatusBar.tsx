@@ -13,7 +13,8 @@ export function StatusBar() {
   const total =
     doc.walls.length +
     getOpeningCount(doc) +
-    doc.props.length
+    doc.props.length +
+    doc.referenceImages.length
 
   return (
     <div className="flex items-center h-8 bg-panel border-t border-border px-4 gap-0 text-sm text-text-dim select-none shrink-0">

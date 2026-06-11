@@ -20,6 +20,7 @@ import { useEditorStore } from "../store"
 import { getObject, getWallByOpeningId } from "../types"
 import type {
   MapDocument,
+  ReferenceImage,
   Vec2,
   Wall,
   WallOpening,
@@ -101,11 +102,17 @@ export class PixiRenderer {
   private rulerLayer: PIXI.Graphics
   private rulerTextContainer: PIXI.Container
   private gridLayer: PIXI.Graphics
+  private referenceImageLayer: PIXI.Container
   private roomLayer: PIXI.Graphics
   private objectLayer: PIXI.Container
   private overlayLayer: PIXI.Graphics
   private previewLayer: PIXI.Graphics
   private unsub: () => void
+  private referenceContainers: Map<string, PIXI.Container> = new Map()
+  private referenceSrcs: Map<string, string> = new Map()
+
+  /** Per-reference-image children kept by direct reference. Sprite is null until texture loads. */
+  private refChildren = new Map<string, { gfx: PIXI.Graphics; sprite: PIXI.Sprite | null }>()
 
   private isPanning = false
   private panStart = { x: 0, y: 0 }
@@ -129,12 +136,14 @@ export class PixiRenderer {
     this.rulerLayer = new PIXI.Graphics()
     this.rulerTextContainer = new PIXI.Container()
     this.gridLayer = new PIXI.Graphics()
+    this.referenceImageLayer = new PIXI.Container()
     this.roomLayer = new PIXI.Graphics()
     this.objectLayer = new PIXI.Container()
     this.overlayLayer = new PIXI.Graphics()
     this.previewLayer = new PIXI.Graphics()
 
     this.app.stage.addChild(this.gridLayer)
+    this.app.stage.addChild(this.referenceImageLayer)
     this.app.stage.addChild(this.roomLayer)
     this.app.stage.addChild(this.objectLayer)
     this.app.stage.addChild(this.overlayLayer)
@@ -542,6 +551,13 @@ export class PixiRenderer {
       }
     }
 
+    // Reference images (behind objects, check after props)
+    for (const img of [...store.document.referenceImages].reverse()) {
+      if (this.pointHitsReferenceImage(point, img)) {
+        return img.id
+      }
+    }
+
     for (const wall of [...store.document.walls].reverse()) {
       for (const opening of [...wall.openings].reverse()) {
         if (this.pointHitsOpening(point, wall, opening, hitPadding)) {
@@ -578,6 +594,19 @@ export class PixiRenderer {
     )
   }
 
+  private pointHitsReferenceImage(point: Vec2, img: ReferenceImage): boolean {
+    const dx = point.x - img.x
+    const dy = point.y - img.y
+    const rad = (-img.rotation * Math.PI) / 180
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
+    const localX = dx * cos - dy * sin
+    const localY = dx * sin + dy * cos
+    const halfW = img.width / 2
+    const halfH = img.height / 2
+    return localX >= -halfW && localX <= halfW && localY >= -halfH && localY <= halfH
+  }
+
   render() {
     const store = useEditorStore.getState()
     const { zoom, cameraX, cameraY, document, selection, gridVisible } = store
@@ -599,6 +628,7 @@ export class PixiRenderer {
     } else {
       this.gridLayer.clear()
     }
+    this.renderReferenceImages(document, selection, toScreen, zoom)
     this.renderRoom(toScreen, store.roomWidth, store.roomHeight)
     this.renderObjects(document, selection, toScreen, zoom)
     this.renderRulers(width, height, cx, cy, zoom, cameraX, cameraY, gridSteps)
@@ -804,6 +834,178 @@ export class PixiRenderer {
     }
   }
 
+  private renderReferenceImages(
+    document: MapDocument,
+    selection: string[],
+    toScreen: (wx: number, wy: number) => { x: number; y: number },
+    zoom: number
+  ) {
+    const selected = new Set(selection)
+    const currentIds = new Set(document.referenceImages.map(img => img.id))
+
+    // Remove containers for deleted images
+    for (const [id, container] of this.referenceContainers) {
+      if (!currentIds.has(id)) {
+        this.referenceImageLayer.removeChild(container)
+        container.destroy(true)
+        this.referenceContainers.delete(id)
+        this.referenceSrcs.delete(id)
+        this.refChildren.delete(id)
+      }
+    }
+
+    for (const img of document.referenceImages) {
+      let container = this.referenceContainers.get(img.id)
+      let children = this.refChildren.get(img.id)
+
+      if (!container) {
+        container = new PIXI.Container()
+        container.eventMode = "none"
+
+        const gfx = new PIXI.Graphics()
+        container.addChild(gfx)
+
+        children = { gfx, sprite: null }
+        this.referenceContainers.set(img.id, container)
+        this.refChildren.set(img.id, children)
+        this.referenceSrcs.set(img.id, img.src)
+        this.referenceImageLayer.addChild(container)
+
+        // Kick off async texture load
+        this.loadReferenceTexture(img, container, children, zoom)
+      } else if (children) {
+        const oldSrc = this.referenceSrcs.get(img.id)
+        if (oldSrc !== img.src) {
+          // Source changed — reload
+          if (children.sprite) {
+            container.removeChild(children.sprite)
+            children.sprite.destroy(true)
+            children.sprite = null
+          }
+          this.referenceSrcs.set(img.id, img.src)
+          this.loadReferenceTexture(img, container, children, zoom)
+        }
+      }
+
+      if (!children) continue
+
+      const screen = toScreen(img.x, img.y)
+      container.position.set(screen.x, screen.y)
+      container.angle = img.rotation
+      container.visible = img.opacity > 0
+
+      // Re-size sprite every frame (zoom may have changed)
+      if (children.sprite) {
+        const nw = img.naturalWidth
+        const nh = img.naturalHeight
+        if (nw > 0 && nh > 0) {
+          children.sprite.scale.set(
+            (img.width * zoom * PPU) / nw,
+            (img.height * zoom * PPU) / nh,
+          )
+        }
+        children.sprite.alpha = img.opacity
+      }
+
+      // Border + crosshair (always visible, independent of texture load)
+      const dw = img.width * zoom * PPU
+      const dh = img.height * zoom * PPU
+      const gfx = children.gfx
+      gfx.clear()
+      const hw = dw / 2
+      const hh = dh / 2
+
+      gfx.rect(-hw, -hh, hw * 2, hh * 2)
+      gfx.stroke({ color: 0xc8a840, width: 1.5, alpha: 0.7 })
+
+      const cs = Math.min(16, Math.min(hw, hh) * 0.3)
+      gfx.moveTo(-cs, 0)
+      gfx.lineTo(cs, 0)
+      gfx.moveTo(0, -cs)
+      gfx.lineTo(0, cs)
+      gfx.stroke({ color: 0xc8a840, width: 1, alpha: 0.4 })
+
+      // Selection highlight on overlay layer
+      if (selected.has(img.id)) {
+        this.renderReferenceImageOutline(img, toScreen)
+      }
+    }
+  }
+
+  private loadReferenceTexture(
+    img: ReferenceImage,
+    container: PIXI.Container,
+    children: { gfx: PIXI.Graphics; sprite: PIXI.Sprite | null },
+    zoom: number,
+  ) {
+    const nw = img.naturalWidth
+    const nh = img.naturalHeight
+
+    // Use a native HTMLImageElement instead of PIXI.Assets.load().
+    // blob: URLs and data: URLs are handled reliably by the browser's
+    // native image decoder; PIXI.Assets has issues with some URL schemes.
+    const htmlImg = new Image()
+    htmlImg.onload = () => {
+      // Image might have been deleted while loading
+      if (!this.referenceContainers.has(img.id)) return
+
+      // Texture.from(HTMLImageElement) is synchronous when the element is
+      // already loaded — the texture will be valid immediately.
+      const texture = PIXI.Texture.from(htmlImg)
+      const sprite = new PIXI.Sprite(texture)
+      sprite.anchor.set(0.5)
+      if (nw > 0 && nh > 0) {
+        sprite.scale.set(
+          (img.width * zoom * PPU) / nw,
+          (img.height * zoom * PPU) / nh,
+        )
+      }
+      sprite.alpha = img.opacity
+
+      // Replace any existing sprite
+      if (children.sprite) {
+        container.removeChild(children.sprite)
+        children.sprite.destroy(true)
+      }
+      container.addChildAt(sprite, 0) // below the border graphics
+      children.sprite = sprite
+    }
+    htmlImg.onerror = () => {
+      console.error('[ReferenceImage] Failed to load:', img.src.slice(0, 80))
+    }
+    htmlImg.src = img.src
+  }
+
+  private renderReferenceImageOutline(
+    img: ReferenceImage,
+    toScreen: (wx: number, wy: number) => { x: number; y: number },
+  ) {
+    const g = this.overlayLayer
+    const rad = (img.rotation * Math.PI) / 180
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
+    const hw = img.width / 2
+    const hh = img.height / 2
+
+    const corners = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh },
+    ].map(local => {
+      const rx = local.x * cos - local.y * sin + img.x
+      const ry = local.x * sin + local.y * cos + img.y
+      return toScreen(rx, ry)
+    })
+
+    g.moveTo(corners[0].x, corners[0].y)
+    for (let i = 1; i < corners.length; i++) {
+      g.lineTo(corners[i].x, corners[i].y)
+    }
+    g.closePath()
+    g.stroke({ color: COLORS.selection, width: 2, alpha: 1 })
+  }
+
   private renderProp(
     x: number,
     y: number,
@@ -912,7 +1114,7 @@ export class PixiRenderer {
     zoom: number,
     camX: number,
     camY: number,
-    { thin, medium, strong }: ReturnType<typeof getGridSteps>
+    { medium, strong }: ReturnType<typeof getGridSteps>
   ) {
     const graphics = this.rulerLayer
     graphics.clear()
@@ -1031,6 +1233,13 @@ export class PixiRenderer {
     canvas.removeEventListener("mouseup", this.onMouseUp)
     canvas.removeEventListener("mouseleave", this.onMouseLeave)
     canvas.parentNode?.removeChild(canvas)
+    // Clean up reference image containers
+    for (const container of this.referenceContainers.values()) {
+      container.destroy(true)
+    }
+    this.referenceContainers.clear()
+    this.referenceSrcs.clear()
+    this.refChildren.clear()
     this.app.destroy()
   }
 }

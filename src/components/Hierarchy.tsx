@@ -6,6 +6,7 @@ import {
   ChevronRight,
   DoorOpen,
   Globe,
+  Image,
   Layers,
   Search,
   Square,
@@ -17,7 +18,7 @@ import { cn } from "../lib/utils"
 type Item = {
   id: string
   name: string
-  type: "wall" | "door" | "window" | "prop"
+  type: "wall" | "door" | "window" | "prop" | "referenceImage"
 }
 
 const ICONS = {
@@ -25,6 +26,7 @@ const ICONS = {
   door: DoorOpen,
   window: AppWindow,
   prop: Box,
+  referenceImage: Image,
 } satisfies Record<Item["type"], React.FC<{ size?: number; className?: string }>>
 
 export function Hierarchy() {
@@ -53,6 +55,11 @@ export function Hierarchy() {
       id: prop.id,
       name: getObjectName(prop.id),
       type: "prop" as const,
+    })),
+    ...document.referenceImages.map(img => ({
+      id: img.id,
+      name: getObjectName(img.id),
+      type: "referenceImage" as const,
     })),
   ]
 
