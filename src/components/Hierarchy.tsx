@@ -7,7 +7,6 @@ import {
   DoorOpen,
   Globe,
   Image,
-  Layers,
   Search,
   Square,
   X,
@@ -36,7 +35,6 @@ export function Hierarchy() {
   const getObjectName = useEditorStore(state => state.getObjectName)
   const [search, setSearch] = useState("")
   const [worldOpen, setWorldOpen] = useState(true)
-  const [roomOpen, setRoomOpen] = useState(true)
 
   const items: Item[] = [
     ...document.walls.map(wall => ({
@@ -99,45 +97,32 @@ export function Hierarchy() {
         </button>
 
         {worldOpen && (
-          <>
-            <button
-              onClick={() => setRoomOpen(value => !value)}
-              className="flex items-center w-full pl-7 pr-3 py-1.5 gap-1.5 text-sm text-text-dim hover:text-text hover:bg-muted"
-            >
-              {roomOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              <Layers size={13} className="text-text-dim/70" />
-              <span className="font-medium">Room_001</span>
-            </button>
-
-            {roomOpen && (
-              <div>
-                {filtered.length === 0 && (
-                  <div className="pl-14 py-3 text-sm text-text-dim">
-                    {search ? "No results" : "No objects"}
-                  </div>
-                )}
-
-                {filtered.map(item => {
-                  const Icon = ICONS[item.type]
-                  const isSelected = selection.includes(item.id)
-
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => setSelection([item.id])}
-                      className={cn(
-                        "flex items-center w-full pl-11 pr-3 py-1.5 gap-2 text-sm truncate transition-colors",
-                        isSelected ? "bg-accent/20 text-accent" : "text-text hover:bg-muted"
-                      )}
-                    >
-                      <Icon size={11} className={isSelected ? "text-accent" : "text-text-dim"} />
-                      <span className="truncate">{item.name}</span>
-                    </button>
-                  )
-                })}
+          <div>
+            {filtered.length === 0 && (
+              <div className="pl-10 py-3 text-sm text-text-dim">
+                {search ? "No results" : "No objects"}
               </div>
             )}
-          </>
+
+            {filtered.map(item => {
+              const Icon = ICONS[item.type]
+              const isSelected = selection.includes(item.id)
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setSelection([item.id])}
+                  className={cn(
+                    "flex items-center w-full pl-7 pr-3 py-1.5 gap-2 text-sm truncate transition-colors",
+                    isSelected ? "bg-accent/20 text-accent" : "text-text hover:bg-muted"
+                  )}
+                >
+                  <Icon size={11} className={isSelected ? "text-accent" : "text-text-dim"} />
+                  <span className="truncate">{item.name}</span>
+                </button>
+              )
+            })}
+          </div>
         )}
       </div>
     </div>

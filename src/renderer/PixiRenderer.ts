@@ -1200,28 +1200,6 @@ export class PixiRenderer {
       }
     }
 
-    const { roomWidth, roomHeight } = useEditorStore.getState()
-    const roomCenter = toScreen(0, 0)
-    if (
-      roomCenter.x > RULER &&
-      roomCenter.x < width - 60 &&
-      roomCenter.y > RULER &&
-      roomCenter.y < height - 30
-    ) {
-      const label = new PIXI.Text({
-        text: `Room_001\n${roomWidth} x ${roomHeight} u`,
-        style: {
-          fontSize: 13,
-          fill: 0x3a4450,
-          fontFamily: "system-ui",
-          align: "center",
-          lineHeight: 18,
-        },
-      })
-      label.x = roomCenter.x - label.width / 2
-      label.y = roomCenter.y - label.height / 2
-      this.rulerTextContainer.addChild(label)
-    }
   }
 
   destroy() {
