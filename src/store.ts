@@ -19,6 +19,7 @@ import type {
   WallOpening,
   WallOpeningKind,
 } from "./types"
+import type { LoadResult } from "./lib/map-format"
 
 function createDefaultRoom({ size, wallThickness }: { size: number; wallThickness: number }) {
   const half = size / 2
@@ -140,6 +141,9 @@ type EditorStore = {
   deleteSelected: () => void
   getObjectName: (id: string) => string
   getObjectCount: () => number
+
+  /** Replace the entire document with a loaded map file's contents. */
+  importMap: (result: LoadResult) => void
 }
 
 function createOpeningName(kind: WallOpeningKind, counter: number) {
@@ -328,6 +332,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                   x: patch.x ?? candidate.x,
                   y: patch.y ?? candidate.y,
                   assetId: patch.assetId ?? candidate.assetId,
+                  rotation: patch.rotation !== undefined ? patch.rotation : candidate.rotation,
                 }
                 : candidate
             ),
@@ -410,6 +415,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   getObjectCount: () => {
     const document = get().document
     return document.walls.length + getOpeningCount(document) + document.props.length + document.referenceImages.length
+  },
+
+  importMap: result => {
+    set({
+      document: result.document,
+      names: result.names,
+      counters: result.counters,
+      roomWidth: result.roomWidth,
+      roomHeight: result.roomHeight,
+      selection: [],
+      cameraX: 0,
+      cameraY: 0,
+      zoom: 1,
+    })
   },
 }))
 

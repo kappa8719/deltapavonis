@@ -2,11 +2,12 @@ import {
   MousePointer2, Square, DoorOpen, AppWindow, Box,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Maximize2,
   Grid3x3, ChevronUp, ChevronDown, Play, Settings,
-  ZoomIn, ZoomOut, ImagePlus,
+  ZoomIn, ZoomOut, ImagePlus, Download, Upload,
 } from "lucide-react"
 import { useEditorStore } from "../store"
 import type { ActiveTool } from "../types"
 import { cn } from "../lib/utils"
+import { saveMap, loadMap, MapFormatError } from "../lib/map-format"
 
 const tools: { id: ActiveTool; label: string; icon: React.FC<{ size?: number }> }[] = [
   { id: "select", label: "Select", icon: MousePointer2 },
@@ -92,12 +93,62 @@ export function Toolbar() {
   const gridVisible = useEditorStore(s => s.gridVisible)
   const setGridVisible = useEditorStore(s => s.setGridVisible)
   const setCamera = useEditorStore(s => s.setCamera)
+  const mapDoc = useEditorStore(s => s.document)
+  const roomWidth = useEditorStore(s => s.roomWidth)
+  const roomHeight = useEditorStore(s => s.roomHeight)
+  const importMapAction = useEditorStore(s => s.importMap)
 
   const zoomPct = Math.round(zoom * 100)
 
   const resetView = () => {
     setZoom(1)
     setCamera(0, 0)
+  }
+
+  const handleExportMap = () => {
+    if (!mapDoc) return
+    const json = saveMap(mapDoc, { name: "untitled" }, {
+      x: -roomWidth / 2,
+      y: -roomHeight / 2,
+      w: roomWidth,
+      h: roomHeight,
+    })
+    const blob = new Blob([json], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = globalThis.document.createElement("a")
+    a.href = url
+    a.download = "map.json"
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImportMap = () => {
+    const input = globalThis.document.createElement("input")
+    input.type = "file"
+    input.accept = ".json,application/json"
+    input.onchange = () => {
+      const file = input.files?.[0]
+      if (!file) return
+
+      const reader = new FileReader()
+      reader.onload = () => {
+        const text = reader.result
+        if (typeof text !== "string") return
+        try {
+          const result = loadMap(text)
+          importMapAction(result)
+        } catch (err) {
+          if (err instanceof MapFormatError) {
+            alert(`Failed to import map:\n${err.message}`)
+          } else {
+            alert(`Failed to import map: unexpected error`)
+            console.error(err)
+          }
+        }
+      }
+      reader.readAsText(file)
+    }
+    input.click()
   }
 
   return (
@@ -189,6 +240,26 @@ export function Toolbar() {
       </div>
 
       <div className="flex-1" />
+
+      {/* Import / Export */}
+      <button
+        onClick={handleImportMap}
+        title="Import Map (.json)"
+        className="flex items-center gap-2 px-2.5 h-8 rounded-md text-sm text-text-dim hover:text-text hover:bg-muted transition-colors"
+      >
+        <Upload size={13} />
+        <span>Import</span>
+      </button>
+      <button
+        onClick={handleExportMap}
+        title="Export Map (.json)"
+        className="flex items-center gap-2 px-2.5 h-8 rounded-md text-sm text-text-dim hover:text-text hover:bg-muted transition-colors"
+      >
+        <Download size={13} />
+        <span>Export</span>
+      </button>
+
+      <Divider />
 
       {/* Play / Test */}
       <button className="flex items-center gap-2 px-3 h-8 rounded-md text-sm text-text-dim hover:text-text hover:bg-muted transition-colors">

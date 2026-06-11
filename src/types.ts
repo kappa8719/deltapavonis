@@ -35,6 +35,7 @@ export type Prop = {
   x: number
   y: number
   assetId: string
+  rotation?: number
 }
 
 export type ReferenceImage = {
@@ -81,6 +82,11 @@ export type ObjectPatch = Partial<{
   rotation: number
   opacity: number
 }>
+
+/** Fields that can appear on a Prop beyond the core type. */
+export type PropExtras = {
+  rotation?: number
+}
 
 export function getObjectType(doc: MapDocument, id: string): ObjectType | null {
   const obj = getObject(doc, id)
