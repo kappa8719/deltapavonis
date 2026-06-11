@@ -9,9 +9,6 @@ import {
   getOpeningQuad,
   getWallQuad,
   getWallSolidIntervals,
-  GRID_MEDIUM,
-  GRID_STRONG,
-  GRID_THIN,
   PIXELS_PER_UNIT,
   projectPointOntoWall,
   wallLength,
@@ -57,6 +54,38 @@ const COLORS = {
   handleFill: 0x4ea1ff,
   dimLabel: 0x4ea1ff,
   invalid: 0xc2410c,
+}
+
+/**
+ * Snap a raw step value to the nearest "nice" number in a 1-2-5-10 progression.
+ * e.g. 0.34 → 0.5, 2.7 → 2, 5.3 → 5, 12 → 10, 45 → 50
+ */
+function snapToNiceStep(rawStep: number): number {
+  if (rawStep <= 0) return 1
+  const exp = Math.floor(Math.log10(rawStep))
+  const frac = rawStep / Math.pow(10, exp)
+  let nice: number
+  if (frac < 1.5) nice = 1
+  else if (frac < 3.5) nice = 2
+  else if (frac < 7.5) nice = 5
+  else nice = 10
+  return nice * Math.pow(10, exp)
+}
+
+/**
+ * Compute grid step sizes from viewport zoom so grid lines maintain
+ * roughly constant pixel density regardless of zoom level.
+ *
+ * The thin tier targets ~PPU pixel spacing on screen; medium and strong
+ * are derived at 5× and 10× the thin step respectively.
+ */
+function getGridSteps(zoom: number) {
+  const gridStep = snapToNiceStep(1 / zoom)
+  return {
+    thin: gridStep,
+    medium: gridStep * 5,
+    strong: gridStep * 10,
+  }
 }
 
 type OpeningPreview = {
@@ -563,14 +592,16 @@ export class PixiRenderer {
       y: (wy + cameraY) * zoom * PPU + cy,
     })
 
+    const gridSteps = getGridSteps(zoom)
+
     if (gridVisible) {
-      this.renderGrid(width, height, cx, cy, zoom, cameraX, cameraY)
+      this.renderGrid(width, height, cx, cy, zoom, cameraX, cameraY, gridSteps)
     } else {
       this.gridLayer.clear()
     }
     this.renderRoom(toScreen, store.roomWidth, store.roomHeight)
     this.renderObjects(document, selection, toScreen, zoom)
-    this.renderRulers(width, height, cx, cy, zoom, cameraX, cameraY)
+    this.renderRulers(width, height, cx, cy, zoom, cameraX, cameraY, gridSteps)
   }
 
   private renderGrid(
@@ -580,7 +611,8 @@ export class PixiRenderer {
     cy: number,
     zoom: number,
     camX: number,
-    camY: number
+    camY: number,
+    { thin, medium, strong }: ReturnType<typeof getGridSteps>
   ) {
     const graphics = this.gridLayer
     graphics.clear()
@@ -590,10 +622,10 @@ export class PixiRenderer {
       y: (wy + camY) * zoom * PPU + cy,
     })
 
-    const worldLeft = (-cx / (zoom * PPU)) - camX - GRID_STRONG
-    const worldTop = (-cy / (zoom * PPU)) - camY - GRID_STRONG
-    const worldRight = (width - cx) / (zoom * PPU) - camX + GRID_STRONG
-    const worldBottom = (height - cy) / (zoom * PPU) - camY + GRID_STRONG
+    const worldLeft = (-cx / (zoom * PPU)) - camX - strong
+    const worldTop = (-cy / (zoom * PPU)) - camY - strong
+    const worldRight = (width - cx) / (zoom * PPU) - camX + strong
+    const worldBottom = (height - cy) / (zoom * PPU) - camY + strong
 
     const drawGridLines = (
       step: number,
@@ -613,8 +645,8 @@ export class PixiRenderer {
         graphics.moveTo(start.x, start.y)
         graphics.lineTo(end.x, end.y)
         graphics.stroke({
-          color: isOrigin && step === GRID_STRONG ? COLORS.gridOriginX : color,
-          width: isOrigin && step === GRID_STRONG ? lineWidth + 0.5 : lineWidth,
+          color: isOrigin && step === strong ? COLORS.gridOriginX : color,
+          width: isOrigin && step === strong ? lineWidth + 0.5 : lineWidth,
           alpha,
         })
       }
@@ -627,31 +659,33 @@ export class PixiRenderer {
         graphics.moveTo(start.x, start.y)
         graphics.lineTo(end.x, end.y)
         graphics.stroke({
-          color: isOrigin && step === GRID_STRONG ? COLORS.gridOriginY : color,
-          width: isOrigin && step === GRID_STRONG ? lineWidth + 0.5 : lineWidth,
+          color: isOrigin && step === strong ? COLORS.gridOriginY : color,
+          width: isOrigin && step === strong ? lineWidth + 0.5 : lineWidth,
           alpha,
         })
       }
     }
 
+    // Fine grid: only when zoomed in enough, skip lines shared with medium tier
     if (zoom * PPU >= 4) {
       drawGridLines(
-        GRID_THIN,
+        thin,
         COLORS.gridThin,
         0.6,
         1,
-        value => value % GRID_MEDIUM !== 0
+        value => Math.abs(value % medium) > 0.001
       )
     }
 
+    // Medium grid: skip lines shared with strong tier
     drawGridLines(
-      GRID_MEDIUM,
+      medium,
       COLORS.gridMedium,
       0.75,
       1,
-      value => value % GRID_STRONG !== 0
+      value => Math.abs(value % strong) > 0.001
     )
-    drawGridLines(GRID_STRONG, COLORS.gridStrong, 0.95, 1.1)
+    drawGridLines(strong, COLORS.gridStrong, 0.95, 1.1)
   }
 
   private renderRoom(
@@ -877,7 +911,8 @@ export class PixiRenderer {
     cy: number,
     zoom: number,
     camX: number,
-    camY: number
+    camY: number,
+    { thin, medium, strong }: ReturnType<typeof getGridSteps>
   ) {
     const graphics = this.rulerLayer
     graphics.clear()
@@ -907,9 +942,9 @@ export class PixiRenderer {
     graphics.stroke({ color: COLORS.rulerTick, width: 0.5, alpha: 0.5 })
 
     const pixelsPerUnit = zoom * PPU
-    let tickInterval = GRID_STRONG
-    if (pixelsPerUnit * GRID_STRONG > 90) tickInterval = GRID_MEDIUM
-    if (pixelsPerUnit * GRID_MEDIUM < 20) tickInterval = 20
+    let tickInterval = strong
+    if (pixelsPerUnit * strong > 90) tickInterval = medium
+    if (pixelsPerUnit * medium < 20) tickInterval = strong * 2
 
     const worldLeft = (-cx / (zoom * PPU)) - camX
     const worldRight = (width - cx) / (zoom * PPU) - camX
@@ -934,7 +969,7 @@ export class PixiRenderer {
       graphics.lineTo(sx, RULER)
       graphics.stroke({ color: COLORS.rulerTick, width: 0.5, alpha: 0.8 })
 
-      if (isMajor || tickInterval <= GRID_MEDIUM) {
+      if (isMajor || tickInterval <= medium) {
         const label = new PIXI.Text({ text: String(Math.round(wx)), style: labelStyle })
         label.x = sx + 2
         label.y = 3
@@ -954,7 +989,7 @@ export class PixiRenderer {
       graphics.lineTo(RULER, sy)
       graphics.stroke({ color: COLORS.rulerTick, width: 0.5, alpha: 0.8 })
 
-      if (isMajor || tickInterval <= GRID_MEDIUM) {
+      if (isMajor || tickInterval <= medium) {
         const label = new PIXI.Text({ text: String(Math.round(wy)), style: labelStyle })
         label.angle = -90
         label.x = RULER - 3

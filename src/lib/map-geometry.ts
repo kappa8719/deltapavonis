@@ -4,9 +4,6 @@ export const PIXELS_PER_UNIT = 6
 export const DEFAULT_WALL_THICKNESS = 8
 export const DEFAULT_DOOR_WIDTH = 9
 export const DEFAULT_WINDOW_WIDTH = 6
-export const GRID_THIN = 1
-export const GRID_MEDIUM = 5
-export const GRID_STRONG = 10
 
 const EPSILON = 0.0001
 
