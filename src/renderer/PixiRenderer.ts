@@ -2,7 +2,6 @@ import * as PIXI from "pixi.js"
 import {
   canPlaceOpeningOnWall,
   clamp,
-  DEFAULT_WALL_THICKNESS,
   findNearestValidOpeningOffset,
   getOpeningDefaultWidth,
   getOpeningInterval,
@@ -129,6 +128,7 @@ export class PixiRenderer {
 
   private isDrawingWall = false
   private drawStart = { worldX: 0, worldY: 0 }
+  private pointerScreen = { x: 0, y: 0 }
 
   private constructor(app: PIXI.Application) {
     this.app = app
@@ -229,6 +229,22 @@ export class PixiRenderer {
   private onWheel = (event: WheelEvent) => {
     event.preventDefault()
     const store = useEditorStore.getState()
+
+    if (store.activeTool === "wall") {
+      const deltaStep = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 100 : 3
+      const thicknessDelta = Math.max(1, Math.round(Math.abs(event.deltaY) / deltaStep))
+      const direction = event.deltaY < 0 ? 1 : -1
+      store.setWallToolThickness(store.wallToolThickness + direction * thicknessDelta)
+
+      if (this.isDrawingWall) {
+        const world = this.screenToWorld(this.pointerScreen.x, this.pointerScreen.y)
+        const wx = this.snapToGrid(world.x)
+        const wy = this.snapToGrid(world.y)
+        this.renderWallPreview(this.drawStart.worldX, this.drawStart.worldY, wx, wy)
+      }
+      return
+    }
+
     const factor = event.deltaY < 0 ? 1.1 : 0.909
     const newZoom = Math.min(10, Math.max(0.1, store.zoom * factor))
 
@@ -252,6 +268,7 @@ export class PixiRenderer {
     const rect = this.app.canvas.getBoundingClientRect()
     const sx = event.clientX - rect.left
     const sy = event.clientY - rect.top
+    this.pointerScreen = { x: sx, y: sy }
     const store = useEditorStore.getState()
 
     if (event.button === 1) {
@@ -322,6 +339,7 @@ export class PixiRenderer {
     const rect = this.app.canvas.getBoundingClientRect()
     const sx = event.clientX - rect.left
     const sy = event.clientY - rect.top
+    this.pointerScreen = { x: sx, y: sy }
     const world = this.screenToWorld(sx, sy)
     const store = useEditorStore.getState()
 
@@ -440,7 +458,7 @@ export class PixiRenderer {
     const id = store.addWall({
       start: { x: x1, y: y1 },
       end: { x: x2, y: y2 },
-      thickness: DEFAULT_WALL_THICKNESS,
+      thickness: store.wallToolThickness,
       openings: [],
     })
     store.setSelection([id])
@@ -450,12 +468,13 @@ export class PixiRenderer {
     this.previewLayer.clear()
     if (x1 === x2 && y1 === y2) return
 
+    const { wallToolThickness } = useEditorStore.getState()
     const wall: Wall = {
       id: "preview",
       kind: "wall",
       start: { x: x1, y: y1 },
       end: { x: x2, y: y2 },
-      thickness: DEFAULT_WALL_THICKNESS,
+      thickness: wallToolThickness,
       openings: [],
     }
     const toScreen = this.getToScreen()

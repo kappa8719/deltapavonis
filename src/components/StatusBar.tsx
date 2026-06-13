@@ -2,10 +2,12 @@ import { useEditorStore } from "../store"
 import { getOpeningCount } from "../types"
 
 export function StatusBar() {
+  const activeTool = useEditorStore(s => s.activeTool)
   const mouseX = useEditorStore(s => s.mouseX)
   const mouseY = useEditorStore(s => s.mouseY)
   const zoom = useEditorStore(s => s.zoom)
   const snapSize = useEditorStore(s => s.snapSize)
+  const wallToolThickness = useEditorStore(s => s.wallToolThickness)
   const doc = useEditorStore(s => s.document)
   const roomWidth = useEditorStore(s => s.roomWidth)
   const roomHeight = useEditorStore(s => s.roomHeight)
@@ -23,6 +25,12 @@ export function StatusBar() {
       <Seg label="Grid" value={`${snapSize}u`} />
       <Sep />
       <Seg label="Zoom" value={`${Math.round(zoom * 100)}%`} />
+      {activeTool === "wall" && (
+        <>
+          <Sep />
+          <Seg label="Wall" value={`${wallToolThickness}u`} />
+        </>
+      )}
       <Sep />
       <span className="text-accent font-medium">1 unit = 10cm</span>
       <Sep />
@@ -31,7 +39,7 @@ export function StatusBar() {
       <Seg label="Room Size" value={`${roomWidth} x ${roomHeight} u`} />
       <div className="flex-1" />
       <span className="text-text-dim/40 text-xs">
-        MMB drag: pan · wheel: zoom · Del: delete
+        MMB drag: pan · wheel: {activeTool === "wall" ? "wall thickness" : "zoom"} · Del: delete
       </span>
     </div>
   )

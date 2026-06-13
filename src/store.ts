@@ -110,6 +110,7 @@ type EditorStore = {
   document: MapDocument
   selection: string[]
   activeTool: ActiveTool
+  wallToolThickness: number
   zoom: number
   cameraX: number
   cameraY: number
@@ -123,6 +124,7 @@ type EditorStore = {
   counters: Record<string, number>
 
   setActiveTool: (tool: ActiveTool) => void
+  setWallToolThickness: (thickness: number) => void
   setZoom: (zoom: number) => void
   setCamera: (x: number, y: number) => void
   setMouse: (x: number, y: number) => void
@@ -155,6 +157,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   document: initialState.document,
   selection: [],
   activeTool: "select",
+  wallToolThickness: DEFAULT_WALL_THICKNESS,
   zoom: 1,
   cameraX: 0,
   cameraY: 0,
@@ -168,6 +171,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   counters: initialState.counters,
 
   setActiveTool: tool => set({ activeTool: tool }),
+  setWallToolThickness: thickness => set({ wallToolThickness: Math.max(1, thickness) }),
   setZoom: zoom => set({ zoom }),
   setCamera: (x, y) => set({ cameraX: x, cameraY: y }),
   setMouse: (x, y) => set({ mouseX: x, mouseY: y }),
