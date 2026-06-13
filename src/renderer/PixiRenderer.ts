@@ -7,24 +7,37 @@ import {
   getOpeningInterval,
   getOpeningQuad,
   getWallQuad,
-  getWallSolidIntervals,
   PIXELS_PER_UNIT,
+  pointInPolygon,
   projectPointOntoWall,
   wallLength,
   wallLocalToWorld,
   wallNormal,
   worldToWallLocal,
+  type WallGroupPolygon,
+  type WallGroupGeometry,
 } from "../lib/map-geometry"
+import {
+  getWallEndpointPosition,
+  getWallPolygonForEndpoint,
+} from "../lib/wall-topology"
 import { useEditorStore } from "../store"
 import { getObject, getWallByOpeningId } from "../types"
 import type {
+  EditorHandle,
   MapDocument,
   ReferenceImage,
   Vec2,
   Wall,
+  WallEnd,
   WallOpening,
   WallOpeningKind,
 } from "../types"
+
+export type ViewportContextMenuRequest = {
+  x: number
+  y: number
+}
 
 const PPU = PIXELS_PER_UNIT
 const RULER = 24
@@ -52,14 +65,19 @@ const COLORS = {
   propFill: 0x3a7c3a,
   selection: 0x4ea1ff,
   handleFill: 0x4ea1ff,
+  handleMuted: 0x8fb7e1,
   dimLabel: 0x4ea1ff,
   invalid: 0xc2410c,
 }
 
-/**
- * Snap a raw step value to the nearest "nice" number in a 1-2-5-10 progression.
- * e.g. 0.34 → 0.5, 2.7 → 2, 5.3 → 5, 12 → 10, 45 → 50
- */
+type OpeningPreview = {
+  wall: Wall
+  kind: WallOpeningKind
+  width: number
+  offset: number
+  valid: boolean
+}
+
 function snapToNiceStep(rawStep: number): number {
   if (rawStep <= 0) return 1
   const exp = Math.floor(Math.log10(rawStep))
@@ -72,13 +90,6 @@ function snapToNiceStep(rawStep: number): number {
   return nice * Math.pow(10, exp)
 }
 
-/**
- * Compute grid step sizes from viewport zoom so grid lines maintain
- * roughly constant pixel density regardless of zoom level.
- *
- * The thin tier targets ~PPU pixel spacing on screen; medium and strong
- * are derived at 5× and 10× the thin step respectively.
- */
 function getGridSteps(zoom: number) {
   const gridStep = snapToNiceStep(1 / zoom)
   return {
@@ -88,12 +99,15 @@ function getGridSteps(zoom: number) {
   }
 }
 
-type OpeningPreview = {
-  wall: Wall
-  kind: WallOpeningKind
-  width: number
-  offset: number
-  valid: boolean
+function handlesEqual(a: EditorHandle | null, b: EditorHandle | null) {
+  return Boolean(
+    a &&
+    b &&
+    a.kind === "wallEndpoint" &&
+    b.kind === "wallEndpoint" &&
+    a.wallId === b.wallId &&
+    a.end === b.end
+  )
 }
 
 export class PixiRenderer {
@@ -109,8 +123,6 @@ export class PixiRenderer {
   private unsub: () => void
   private referenceContainers: Map<string, PIXI.Container> = new Map()
   private referenceSrcs: Map<string, string> = new Map()
-
-  /** Per-reference-image children kept by direct reference. Sprite is null until texture loads. */
   private refChildren = new Map<string, { gfx: PIXI.Graphics; sprite: PIXI.Sprite | null }>()
 
   private isPanning = false
@@ -121,17 +133,22 @@ export class PixiRenderer {
   private dragObjectId: string | null = null
   private dragStart = { x: 0, y: 0 }
   private dragPropStart = { x: 0, y: 0 }
-  private dragWallStart = {
-    start: { x: 0, y: 0 },
-    end: { x: 0, y: 0 },
-  }
+  private dragWallDelta = { x: 0, y: 0 }
+
+  private isDraggingEndpoint = false
+  private dragEndpoint: { wallId: string; end: WallEnd } | null = null
 
   private isDrawingWall = false
   private drawStart = { worldX: 0, worldY: 0 }
   private pointerScreen = { x: 0, y: 0 }
+  private onContextMenuRequest?: (request: ViewportContextMenuRequest) => void
 
-  private constructor(app: PIXI.Application) {
+  private constructor(
+    app: PIXI.Application,
+    options?: { onContextMenu?: (request: ViewportContextMenuRequest) => void }
+  ) {
     this.app = app
+    this.onContextMenuRequest = options?.onContextMenu
 
     this.rulerLayer = new PIXI.Graphics()
     this.rulerTextContainer = new PIXI.Container()
@@ -156,7 +173,10 @@ export class PixiRenderer {
     this.render()
   }
 
-  static async create(container: HTMLElement): Promise<PixiRenderer> {
+  static async create(
+    container: HTMLElement,
+    options?: { onContextMenu?: (request: ViewportContextMenuRequest) => void }
+  ): Promise<PixiRenderer> {
     const app = new PIXI.Application()
     await app.init({
       resizeTo: container,
@@ -167,7 +187,7 @@ export class PixiRenderer {
     })
     app.canvas.style.cssText = "display:block;width:100%;height:100%;cursor:crosshair"
     container.appendChild(app.canvas)
-    return new PixiRenderer(app)
+    return new PixiRenderer(app, options)
   }
 
   private screenToWorld(sx: number, sy: number) {
@@ -196,6 +216,79 @@ export class PixiRenderer {
     return Math.round(value / snap) * snap
   }
 
+  private getHandleWorldRadius(px = 8) {
+    const zoom = useEditorStore.getState().zoom
+    return Math.max(1.5, px / (zoom * PPU))
+  }
+
+  private getJoinedEndpointHandleOffset() {
+    const zoom = useEditorStore.getState().zoom
+    return Math.max(2, 14 / (zoom * PPU))
+  }
+
+  private drawPolygon(
+    graphics: PIXI.Graphics,
+    points: Vec2[],
+    toScreen: (wx: number, wy: number) => { x: number; y: number },
+    fillColor: number,
+    strokeColor: number,
+    fillAlpha = 0.88,
+    strokeWidth = 1,
+    strokeAlpha = 0.9
+  ) {
+    if (points.length < 3) return
+    const screenPoints = points.map(point => toScreen(point.x, point.y))
+    this.traceScreenPolygon(graphics, screenPoints)
+    graphics.fill({ color: fillColor, alpha: fillAlpha })
+    graphics.stroke({ color: strokeColor, width: strokeWidth, alpha: strokeAlpha })
+  }
+
+  private traceScreenPolygon(
+    graphics: PIXI.Graphics,
+    screenPoints: Array<{ x: number; y: number }>
+  ) {
+    if (screenPoints.length < 3) return
+    graphics.moveTo(screenPoints[0].x, screenPoints[0].y)
+    for (const point of screenPoints.slice(1)) {
+      graphics.lineTo(point.x, point.y)
+    }
+    graphics.closePath()
+  }
+
+  private drawWallGroupPolygon(
+    graphics: PIXI.Graphics,
+    polygon: WallGroupPolygon,
+    toScreen: (wx: number, wy: number) => { x: number; y: number },
+    fillColor: number,
+    strokeColor: number,
+    fillAlpha = 0.88,
+    strokeWidth = 1,
+    strokeAlpha = 0.9
+  ) {
+    if (polygon.outer.length < 3) return
+
+    const outer = polygon.outer.map(point => toScreen(point.x, point.y))
+    this.traceScreenPolygon(graphics, outer)
+    graphics.fill({ color: fillColor, alpha: fillAlpha })
+
+    for (const hole of polygon.holes) {
+      if (hole.length < 3) continue
+      const screenHole = hole.map(point => toScreen(point.x, point.y))
+      this.traceScreenPolygon(graphics, screenHole)
+      graphics.cut()
+    }
+
+    this.traceScreenPolygon(graphics, outer)
+    graphics.stroke({ color: strokeColor, width: strokeWidth, alpha: strokeAlpha })
+
+    for (const hole of polygon.holes) {
+      if (hole.length < 3) continue
+      const screenHole = hole.map(point => toScreen(point.x, point.y))
+      this.traceScreenPolygon(graphics, screenHole)
+      graphics.stroke({ color: strokeColor, width: strokeWidth, alpha: strokeAlpha })
+    }
+  }
+
   private drawQuad(
     graphics: PIXI.Graphics,
     points: Vec2[],
@@ -206,14 +299,7 @@ export class PixiRenderer {
     strokeWidth = 1,
     strokeAlpha = 0.9
   ) {
-    const screenPoints = points.map(point => toScreen(point.x, point.y))
-    graphics.moveTo(screenPoints[0].x, screenPoints[0].y)
-    for (const point of screenPoints.slice(1)) {
-      graphics.lineTo(point.x, point.y)
-    }
-    graphics.closePath()
-    graphics.fill({ color: fillColor, alpha: fillAlpha })
-    graphics.stroke({ color: strokeColor, width: strokeWidth, alpha: strokeAlpha })
+    this.drawPolygon(graphics, points, toScreen, fillColor, strokeColor, fillAlpha, strokeWidth, strokeAlpha)
   }
 
   private bindEvents() {
@@ -223,7 +309,7 @@ export class PixiRenderer {
     canvas.addEventListener("mousemove", this.onMouseMove)
     canvas.addEventListener("mouseup", this.onMouseUp)
     canvas.addEventListener("mouseleave", this.onMouseLeave)
-    canvas.addEventListener("contextmenu", event => event.preventDefault())
+    canvas.addEventListener("contextmenu", this.onContextMenu)
   }
 
   private onWheel = (event: WheelEvent) => {
@@ -283,18 +369,45 @@ export class PixiRenderer {
 
     const tool = store.activeTool
     const world = this.screenToWorld(sx, sy)
+    const multiSelect = event.shiftKey || event.metaKey || event.ctrlKey
 
     if (tool === "select") {
       this.previewLayer.clear()
-      const hit = this.hitTest(sx, sy)
+
+      const handle = this.hitTestHandle(sx, sy)
+      if (handle) {
+        if (multiSelect) {
+          store.toggleSelection(handle.wallId)
+          store.setSelectedHandle(null)
+          return
+        }
+
+        store.setSelection([handle.wallId])
+        store.setSelectedHandle(handle)
+        this.isDraggingEndpoint = true
+        this.dragEndpoint = { wallId: handle.wallId, end: handle.end }
+        this.dragStart = { x: sx, y: sy }
+        return
+      }
+
+      const hit = this.hitTestObject(sx, sy)
       if (!hit) {
+        if (multiSelect) return
+        store.setSelectedHandle(null)
         store.setSelection([])
+        return
+      }
+
+      if (multiSelect) {
+        store.toggleSelection(hit)
+        store.setSelectedHandle(null)
         return
       }
 
       this.isDraggingObject = true
       this.dragObjectId = hit
       this.dragStart = { x: sx, y: sy }
+      store.setSelectedHandle(null)
       store.setSelection([hit])
 
       const object = getObject(store.document, hit)
@@ -306,10 +419,7 @@ export class PixiRenderer {
       }
 
       if (object.kind === "wall") {
-        this.dragWallStart = {
-          start: { ...object.start },
-          end: { ...object.end },
-        }
+        this.dragWallDelta = { x: 0, y: 0 }
         return
       }
       return
@@ -331,7 +441,10 @@ export class PixiRenderer {
         ? store.addDoor(preview.wall.id, { offset: preview.offset, width: preview.width })
         : store.addWindow(preview.wall.id, { offset: preview.offset, width: preview.width })
 
-      if (id) store.setSelection([id])
+      if (id) {
+        store.setSelectedHandle(null)
+        store.setSelection([id])
+      }
     }
   }
 
@@ -352,6 +465,12 @@ export class PixiRenderer {
       return
     }
 
+    if (this.isDraggingEndpoint && this.dragEndpoint) {
+      const snapped = this.getSnappedWorldPoint(sx, sy)
+      store.moveWallEndpoint(this.dragEndpoint.wallId, this.dragEndpoint.end, snapped)
+      return
+    }
+
     if (this.isDraggingObject && this.dragObjectId) {
       this.handleObjectDrag(sx, sy)
       return
@@ -365,8 +484,15 @@ export class PixiRenderer {
     }
 
     if (store.activeTool === "door" || store.activeTool === "window") {
+      store.setHoveredHandle(null)
       this.renderOpeningPreview(world, store.activeTool)
       return
+    }
+
+    if (store.activeTool === "select") {
+      store.setHoveredHandle(this.hitTestHandle(sx, sy))
+    } else {
+      store.setHoveredHandle(null)
     }
 
     this.previewLayer.clear()
@@ -379,6 +505,12 @@ export class PixiRenderer {
     }
 
     if (event.button !== 0) return
+
+    if (this.isDraggingEndpoint && this.dragEndpoint) {
+      this.isDraggingEndpoint = false
+      this.dragEndpoint = null
+      return
+    }
 
     if (this.isDraggingObject) {
       this.isDraggingObject = false
@@ -400,9 +532,65 @@ export class PixiRenderer {
   }
 
   private onMouseLeave = () => {
-    if (!this.isDrawingWall && !this.isDraggingObject) {
+    const store = useEditorStore.getState()
+    store.setHoveredHandle(null)
+    if (!this.isDrawingWall && !this.isDraggingObject && !this.isDraggingEndpoint) {
       this.previewLayer.clear()
     }
+  }
+
+  private onContextMenu = (event: MouseEvent) => {
+    event.preventDefault()
+
+    const store = useEditorStore.getState()
+    if (store.activeTool !== "select") return
+
+    const rect = this.app.canvas.getBoundingClientRect()
+    const sx = event.clientX - rect.left
+    const sy = event.clientY - rect.top
+    const handle = this.hitTestEndpointHandle(sx, sy)
+    const hit = handle ? null : this.hitTestObject(sx, sy)
+
+    if (handle) {
+      if (!store.selection.includes(handle.wallId)) {
+        store.setSelection([handle.wallId])
+      }
+      store.setSelectedHandle(handle)
+    } else if (hit) {
+      if (!store.selection.includes(hit)) {
+        store.setSelection([hit])
+      }
+      store.setSelectedHandle(null)
+    } else {
+      store.setSelectedHandle(null)
+    }
+
+    this.onContextMenuRequest?.({ x: sx, y: sy })
+  }
+
+  private getSnappedWorldPoint(sx: number, sy: number) {
+    const world = this.screenToWorld(sx, sy)
+    return {
+      x: this.snapToGrid(world.x),
+      y: this.snapToGrid(world.y),
+    }
+  }
+
+  private isJoinedEndpoint(wallId: string, end: WallEnd) {
+    return Boolean(getWallPolygonForEndpoint(useEditorStore.getState().document, wallId, end))
+  }
+
+  private getEndpointHandlePosition(wall: Wall, end: WallEnd): Vec2 {
+    const actual = getWallEndpointPosition(wall, end)
+    const polygon = getWallPolygonForEndpoint(useEditorStore.getState().document, wall.id, end)
+    if (!polygon) return actual
+
+    const length = wallLength(wall)
+    if (length <= 0) return actual
+
+    const offset = this.getJoinedEndpointHandleOffset()
+    const along = end === "start" ? offset : length - offset
+    return wallLocalToWorld(wall, along, 0)
   }
 
   private handleObjectDrag(sx: number, sy: number) {
@@ -425,16 +613,13 @@ export class PixiRenderer {
     if (object.kind === "wall") {
       const tx = this.snapToGrid(dx)
       const ty = this.snapToGrid(dy)
-      store.updateObject(object.id, {
-        start: {
-          x: this.dragWallStart.start.x + tx,
-          y: this.dragWallStart.start.y + ty,
-        },
-        end: {
-          x: this.dragWallStart.end.x + tx,
-          y: this.dragWallStart.end.y + ty,
-        },
+      if (tx === this.dragWallDelta.x && ty === this.dragWallDelta.y) return
+
+      store.moveWallBody(object.id, {
+        x: tx - this.dragWallDelta.x,
+        y: ty - this.dragWallDelta.y,
       })
+      this.dragWallDelta = { x: tx, y: ty }
       return
     }
 
@@ -461,6 +646,7 @@ export class PixiRenderer {
       thickness: store.wallToolThickness,
       openings: [],
     })
+    store.setSelectedHandle(null)
     store.setSelection([id])
   }
 
@@ -558,24 +744,37 @@ export class PixiRenderer {
     )
   }
 
-  private hitTest(sx: number, sy: number): string | null {
+  private hitTestHandle(sx: number, sy: number): EditorHandle | null {
+    return this.hitTestEndpointHandle(sx, sy)
+  }
+
+  private hitTestEndpointHandle(
+    sx: number,
+    sy: number,
+    exclude?: { wallId: string; end: WallEnd }
+  ) {
+    const store = useEditorStore.getState()
+    const point = this.screenToWorld(sx, sy)
+    const radius = this.getHandleWorldRadius(8)
+
+    for (const wall of [...store.document.walls].reverse()) {
+      for (const end of ["start", "end"] as const) {
+        if (exclude && exclude.wallId === wall.id && exclude.end === end) continue
+        const handlePoint = this.getEndpointHandlePosition(wall, end)
+        if (Math.hypot(point.x - handlePoint.x, point.y - handlePoint.y) <= radius) {
+          return { kind: "wallEndpoint", wallId: wall.id, end } as const
+        }
+      }
+    }
+
+    return null
+  }
+
+  private hitTestObject(sx: number, sy: number): string | null {
     const store = useEditorStore.getState()
     const point = this.screenToWorld(sx, sy)
     const hitPadding = Math.max(1.5, 8 / (store.zoom * PPU))
     const propRadius = Math.max(2, 10 / (store.zoom * PPU))
-
-    for (const prop of [...store.document.props].reverse()) {
-      if (Math.hypot(point.x - prop.x, point.y - prop.y) <= propRadius) {
-        return prop.id
-      }
-    }
-
-    // Reference images (behind objects, check after props)
-    for (const img of [...store.document.referenceImages].reverse()) {
-      if (this.pointHitsReferenceImage(point, img)) {
-        return img.id
-      }
-    }
 
     for (const wall of [...store.document.walls].reverse()) {
       for (const opening of [...wall.openings].reverse()) {
@@ -585,9 +784,40 @@ export class PixiRenderer {
       }
     }
 
-    for (const wall of [...store.document.walls].reverse()) {
-      if (this.pointHitsWall(point, wall, hitPadding)) {
-        return wall.id
+    for (const group of [...store.wallRenderCache.wallGroups].sort((a, b) => b.order - a.order)) {
+      if (!this.pointHitsWallGroup(point, group)) continue
+
+      let nearestWallId: string | null = null
+      let nearestScore = Number.POSITIVE_INFINITY
+
+      for (const wallId of group.wallIds) {
+        const wall = store.document.walls.find(candidate => candidate.id === wallId)
+        if (!wall) continue
+
+        const local = worldToWallLocal(point, wall)
+        const alongClamped = clamp(local.along, 0, wallLength(wall))
+        const dx = local.along - alongClamped
+        const dy = local.perp
+        const score = Math.hypot(dx, dy)
+
+        if (score < nearestScore) {
+          nearestScore = score
+          nearestWallId = wallId
+        }
+      }
+
+      return nearestWallId
+    }
+
+    for (const prop of [...store.document.props].reverse()) {
+      if (Math.hypot(point.x - prop.x, point.y - prop.y) <= propRadius) {
+        return prop.id
+      }
+    }
+
+    for (const img of [...store.document.referenceImages].reverse()) {
+      if (this.pointHitsReferenceImage(point, img)) {
+        return img.id
       }
     }
 
@@ -604,12 +834,10 @@ export class PixiRenderer {
     )
   }
 
-  private pointHitsWall(point: Vec2, wall: Wall, padding: number) {
-    const local = worldToWallLocal(point, wall)
-    if (Math.abs(local.perp) > wall.thickness / 2 + padding) return false
-
-    return getWallSolidIntervals(wall).some(interval =>
-      local.along >= interval.from - padding && local.along <= interval.to + padding
+  private pointHitsWallGroup(point: Vec2, group: WallGroupGeometry) {
+    return group.polygons.some(polygon =>
+      pointInPolygon(point, polygon.outer) &&
+      !polygon.holes.some(hole => pointInPolygon(point, hole))
     )
   }
 
@@ -715,7 +943,6 @@ export class PixiRenderer {
       }
     }
 
-    // Fine grid: only when zoomed in enough, skip lines shared with medium tier
     if (zoom * PPU >= 4) {
       drawGridLines(
         thin,
@@ -726,7 +953,6 @@ export class PixiRenderer {
       )
     }
 
-    // Medium grid: skip lines shared with strong tier
     drawGridLines(
       medium,
       COLORS.gridMedium,
@@ -771,35 +997,30 @@ export class PixiRenderer {
     this.overlayLayer.clear()
 
     const selected = new Set(selection)
+    const store = useEditorStore.getState()
+    const selectedHandle = store.selectedHandle
+    const hoveredHandle = store.hoveredHandle
+    const cache = store.wallRenderCache
 
-    for (const wall of document.walls) {
+    for (const group of [...cache.wallGroups].sort((a, b) => a.order - b.order)) {
       const graphics = new PIXI.Graphics()
-
-      for (const interval of getWallSolidIntervals(wall)) {
-        this.drawQuad(
+      for (const polygon of group.polygons) {
+        this.drawWallGroupPolygon(
           graphics,
-          getWallQuad(wall, interval.from, interval.to),
+          polygon,
           toScreen,
           COLORS.wallFill,
-          COLORS.wall
+          COLORS.wall,
+          0.9,
+          1,
+          0.9
         )
       }
-
-      if (selected.has(wall.id)) {
-        this.drawQuad(
-          graphics,
-          getWallQuad(wall),
-          toScreen,
-          COLORS.selection,
-          COLORS.selection,
-          0.08,
-          1.8,
-          1
-        )
-      }
-
       this.objectLayer.addChild(graphics)
+    }
 
+    for (const wall of document.walls) {
+      const terminals = cache.terminals[wall.id]
       for (const opening of wall.openings) {
         const openingGraphics = new PIXI.Graphics()
         const fillColor = opening.kind === "door" ? COLORS.doorFill : COLORS.windowFill
@@ -807,7 +1028,7 @@ export class PixiRenderer {
 
         this.drawQuad(
           openingGraphics,
-          getOpeningQuad(wall, opening),
+          getOpeningQuad(wall, opening, wall.thickness, terminals),
           toScreen,
           fillColor,
           strokeColor,
@@ -819,7 +1040,7 @@ export class PixiRenderer {
         if (selected.has(opening.id)) {
           this.drawQuad(
             openingGraphics,
-            getOpeningQuad(wall, opening, wall.thickness + 1.5),
+            getOpeningQuad(wall, opening, wall.thickness + 1.5, terminals),
             toScreen,
             COLORS.selection,
             COLORS.selection,
@@ -837,18 +1058,68 @@ export class PixiRenderer {
       this.renderProp(prop.x, prop.y, prop.assetId, selected.has(prop.id), toScreen, zoom)
     }
 
-    if (selection.length === 1) {
-      const object = getObject(document, selection[0])
-      if (!object) return
+    if (store.activeTool === "select") {
+      this.renderHandles(document, toScreen, selectedHandle, hoveredHandle)
+    }
 
+    const selectedObjects = selection
+      .map(id => getObject(document, id))
+      .filter((object): object is NonNullable<ReturnType<typeof getObject>> => Boolean(object))
+
+    for (const object of selectedObjects) {
       if (object.kind === "wall") {
-        this.renderWallSelection(object, toScreen, zoom)
-        return
-      }
-
-      if (object.kind === "door" || object.kind === "window") {
+        this.renderWallSelection(
+          object,
+          toScreen,
+          zoom,
+          cache.wallGroups,
+          selection.length === 1
+        )
+      } else if (object.kind === "door" || object.kind === "window") {
         const wall = getWallByOpeningId(document, object.id)
-        if (wall) this.renderOpeningSelection(wall, object, toScreen, zoom)
+        if (wall && selection.length === 1) {
+          this.renderOpeningSelection(wall, object, toScreen, zoom)
+        }
+      }
+    }
+  }
+
+  private renderHandles(
+    document: MapDocument,
+    toScreen: (wx: number, wy: number) => { x: number; y: number },
+    selectedHandle: EditorHandle | null,
+    hoveredHandle: EditorHandle | null
+  ) {
+    const graphics = this.overlayLayer
+
+    for (const wall of document.walls) {
+      for (const end of ["start", "end"] as const) {
+        const actual = getWallEndpointPosition(wall, end)
+        const handle = { kind: "wallEndpoint", wallId: wall.id, end } as const
+        const handlePoint = this.getEndpointHandlePosition(wall, end)
+        const screen = toScreen(handlePoint.x, handlePoint.y)
+        const actualScreen = toScreen(actual.x, actual.y)
+        const joined = this.isJoinedEndpoint(wall.id, end)
+        const isSelected = handlesEqual(selectedHandle, handle)
+        const isHovered = handlesEqual(hoveredHandle, handle)
+
+        if (joined && (Math.abs(handlePoint.x - actual.x) > 0.001 || Math.abs(handlePoint.y - actual.y) > 0.001)) {
+          graphics.moveTo(actualScreen.x, actualScreen.y)
+          graphics.lineTo(screen.x, screen.y)
+          graphics.stroke({ color: COLORS.handleMuted, width: 1, alpha: 0.45 })
+        }
+
+        if (joined) {
+          const size = isSelected ? 4.5 : isHovered ? 4.25 : 4
+          graphics.rect(screen.x - size, screen.y - size, size * 2, size * 2)
+          graphics.fill({ color: COLORS.handleFill, alpha: isSelected || isHovered ? 0.95 : 0.78 })
+          graphics.stroke({ color: 0xffffff, width: isSelected ? 1.4 : 1, alpha: 0.65 })
+        } else {
+          const radius = isSelected ? 4.8 : isHovered ? 4.5 : 4.2
+          graphics.circle(screen.x, screen.y, radius)
+          graphics.fill({ color: COLORS.handleFill, alpha: isSelected || isHovered ? 0.95 : 0.82 })
+          graphics.stroke({ color: 0xffffff, width: isSelected ? 1.4 : 1, alpha: 0.65 })
+        }
       }
     }
   }
@@ -862,7 +1133,6 @@ export class PixiRenderer {
     const selected = new Set(selection)
     const currentIds = new Set(document.referenceImages.map(img => img.id))
 
-    // Remove containers for deleted images
     for (const [id, container] of this.referenceContainers) {
       if (!currentIds.has(id)) {
         this.referenceImageLayer.removeChild(container)
@@ -889,13 +1159,10 @@ export class PixiRenderer {
         this.refChildren.set(img.id, children)
         this.referenceSrcs.set(img.id, img.src)
         this.referenceImageLayer.addChild(container)
-
-        // Kick off async texture load
         this.loadReferenceTexture(img, container, children, zoom)
       } else if (children) {
         const oldSrc = this.referenceSrcs.get(img.id)
         if (oldSrc !== img.src) {
-          // Source changed — reload
           if (children.sprite) {
             container.removeChild(children.sprite)
             children.sprite.destroy(true)
@@ -913,7 +1180,6 @@ export class PixiRenderer {
       container.angle = img.rotation
       container.visible = img.opacity > 0
 
-      // Re-size sprite every frame (zoom may have changed)
       if (children.sprite) {
         const nw = img.naturalWidth
         const nh = img.naturalHeight
@@ -926,7 +1192,6 @@ export class PixiRenderer {
         children.sprite.alpha = img.opacity
       }
 
-      // Border + crosshair (always visible, independent of texture load)
       const dw = img.width * zoom * PPU
       const dh = img.height * zoom * PPU
       const gfx = children.gfx
@@ -944,7 +1209,6 @@ export class PixiRenderer {
       gfx.lineTo(0, cs)
       gfx.stroke({ color: 0xc8a840, width: 1, alpha: 0.4 })
 
-      // Selection highlight on overlay layer
       if (selected.has(img.id)) {
         this.renderReferenceImageOutline(img, toScreen)
       }
@@ -959,17 +1223,10 @@ export class PixiRenderer {
   ) {
     const nw = img.naturalWidth
     const nh = img.naturalHeight
-
-    // Use a native HTMLImageElement instead of PIXI.Assets.load().
-    // blob: URLs and data: URLs are handled reliably by the browser's
-    // native image decoder; PIXI.Assets has issues with some URL schemes.
     const htmlImg = new Image()
     htmlImg.onload = () => {
-      // Image might have been deleted while loading
       if (!this.referenceContainers.has(img.id)) return
 
-      // Texture.from(HTMLImageElement) is synchronous when the element is
-      // already loaded — the texture will be valid immediately.
       const texture = PIXI.Texture.from(htmlImg)
       const sprite = new PIXI.Sprite(texture)
       sprite.anchor.set(0.5)
@@ -981,16 +1238,15 @@ export class PixiRenderer {
       }
       sprite.alpha = img.opacity
 
-      // Replace any existing sprite
       if (children.sprite) {
         container.removeChild(children.sprite)
         children.sprite.destroy(true)
       }
-      container.addChildAt(sprite, 0) // below the border graphics
+      container.addChildAt(sprite, 0)
       children.sprite = sprite
     }
     htmlImg.onerror = () => {
-      console.error('[ReferenceImage] Failed to load:', img.src.slice(0, 80))
+      console.error("[ReferenceImage] Failed to load:", img.src.slice(0, 80))
     }
     htmlImg.src = img.src
   }
@@ -1060,38 +1316,51 @@ export class PixiRenderer {
   private renderWallSelection(
     wall: Wall,
     toScreen: (wx: number, wy: number) => { x: number; y: number },
-    zoom: number
+    zoom: number,
+    wallGroups: WallGroupGeometry[],
+    showLabel: boolean
   ) {
     const graphics = this.overlayLayer
+    const group = wallGroups.find(candidate => candidate.wallIds.includes(wall.id))
     const start = toScreen(wall.start.x, wall.start.y)
     const end = toScreen(wall.end.x, wall.end.y)
     const normal = wallNormal(wall)
     const midpoint = wallLocalToWorld(wall, wallLength(wall) / 2, wall.thickness / 2 + 4)
     const midpointScreen = toScreen(midpoint.x, midpoint.y)
-    const radius = 5
 
-    graphics.moveTo(start.x, start.y)
-    graphics.lineTo(end.x, end.y)
-    graphics.stroke({ color: COLORS.selection, width: 1.5, alpha: 1 })
-
-    for (const point of [start, end]) {
-      graphics.circle(point.x, point.y, radius)
-      graphics.fill({ color: COLORS.handleFill, alpha: 1 })
-      graphics.stroke({ color: 0xffffff, width: 1, alpha: 0.6 })
+    if (group && group.polygons.length > 0) {
+      for (const polygon of group.polygons) {
+        this.drawWallGroupPolygon(
+          graphics,
+          polygon,
+          toScreen,
+          COLORS.selection,
+          COLORS.selection,
+          0.08,
+          1.8,
+          1
+        )
+      }
+    } else {
+      graphics.moveTo(start.x, start.y)
+      graphics.lineTo(end.x, end.y)
+      graphics.stroke({ color: COLORS.selection, width: 1.5, alpha: 1 })
     }
 
-    const label = new PIXI.Text({
-      text: `${Math.round(wallLength(wall))}u · ${Math.round(wall.thickness)}u`,
-      style: {
-        fontSize: Math.max(10, Math.min(13, 11 * zoom)),
-        fill: COLORS.dimLabel,
-        fontFamily: "system-ui",
-        fontWeight: "500",
-      },
-    })
-    label.x = midpointScreen.x - label.width / 2 + normal.x
-    label.y = midpointScreen.y - label.height / 2 + normal.y
-    this.objectLayer.addChild(label)
+    if (showLabel) {
+      const label = new PIXI.Text({
+        text: `${Math.round(wallLength(wall))}u · ${Math.round(wall.thickness)}u`,
+        style: {
+          fontSize: Math.max(10, Math.min(13, 11 * zoom)),
+          fill: COLORS.dimLabel,
+          fontFamily: "system-ui",
+          fontWeight: "500",
+        },
+      })
+      label.x = midpointScreen.x - label.width / 2 + normal.x
+      label.y = midpointScreen.y - label.height / 2 + normal.y
+      this.objectLayer.addChild(label)
+    }
   }
 
   private renderOpeningSelection(
@@ -1212,13 +1481,11 @@ export class PixiRenderer {
 
       if (isMajor || tickInterval <= medium) {
         const label = new PIXI.Text({ text: String(Math.round(wy)), style: labelStyle })
-        label.angle = -90
-        label.x = RULER - 3
-        label.y = sy - 1
+        label.x = 2
+        label.y = sy + 1
         this.rulerTextContainer.addChild(label)
       }
     }
-
   }
 
   destroy() {
@@ -1229,14 +1496,6 @@ export class PixiRenderer {
     canvas.removeEventListener("mousemove", this.onMouseMove)
     canvas.removeEventListener("mouseup", this.onMouseUp)
     canvas.removeEventListener("mouseleave", this.onMouseLeave)
-    canvas.parentNode?.removeChild(canvas)
-    // Clean up reference image containers
-    for (const container of this.referenceContainers.values()) {
-      container.destroy(true)
-    }
-    this.referenceContainers.clear()
-    this.referenceSrcs.clear()
-    this.refChildren.clear()
-    this.app.destroy()
+    this.app.destroy(true, { children: true })
   }
 }

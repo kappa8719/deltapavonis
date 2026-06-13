@@ -9,7 +9,7 @@
  */
 
 import { wallLength } from "./map-geometry"
-import type { MapDocument, Wall, Prop } from "../types"
+import type { MapDocument, Prop, Wall, WallPolygon } from "../types"
 
 // ────────────────────────────────────────────────────────────────────────────
 // Spec types (mirrors the format spec exactly)
@@ -30,6 +30,11 @@ export type MapFile = {
   doors: SpecDoor[]
   objects: SpecObject[]
   zones?: SpecZone[]
+  editor?: EditorExtension
+}
+
+export type EditorExtension = {
+  wallPolygons?: WallPolygon[]
 }
 
 export type MapMetadata = {
@@ -105,6 +110,20 @@ function isPolygon(v: unknown): v is Vec2[] {
   return Array.isArray(v) && v.length >= 3 && v.every(p => isVec2(p))
 }
 
+function isWallPolygon(data: unknown): data is WallPolygon {
+  if (typeof data !== "object" || data === null) return false
+  const polygon = data as Record<string, unknown>
+  if (typeof polygon.id !== "string" || !Array.isArray(polygon.members)) return false
+
+  return polygon.members.every(member =>
+    typeof member === "object" &&
+    member !== null &&
+    typeof (member as Record<string, unknown>).wallId === "string" &&
+    ((member as Record<string, unknown>).end === "start" ||
+      (member as Record<string, unknown>).end === "end")
+  )
+}
+
 /**
  * Validate a parsed map file and return a typed `MapFile`.
  * Throws `MapFormatError` if validation fails.
@@ -176,6 +195,17 @@ export function validateMapFile(data: unknown): MapFile {
       assert(typeof zone.id === "string", `zones[${i}].id must be a string`)
       assert(typeof zone.kind === "string", `zones[${i}].kind must be a string`)
       assert(isPolygon(zone.polygon), `zones[${i}].polygon must be a non-empty array of Vec2`)
+    }
+  }
+
+  if (obj.editor !== undefined) {
+    assert(typeof obj.editor === "object" && obj.editor !== null, "editor must be an object")
+    const editor = obj.editor as Record<string, unknown>
+    if (editor.wallPolygons !== undefined) {
+      assert(Array.isArray(editor.wallPolygons), "editor.wallPolygons must be an array")
+      for (const [i, polygon] of editor.wallPolygons.entries()) {
+        assert(isWallPolygon(polygon), `editor.wallPolygons[${i}] must be a wall polygon`)
+      }
     }
   }
 
@@ -265,6 +295,15 @@ export function saveMap(
     objects,
   }
 
+  if (doc.wallPolygons.length > 0) {
+    mapFile.editor = {
+      wallPolygons: doc.wallPolygons.map(polygon => ({
+        id: polygon.id,
+        members: polygon.members.map(member => ({ ...member })),
+      })),
+    }
+  }
+
   return JSON.stringify(mapFile, null, 2)
 }
 
@@ -302,9 +341,7 @@ export function loadMap(json: string): LoadResult {
   const wallById = new Map<string, Wall>()
 
   const walls: Wall[] = []
-  let wallIdx = 0
   for (const sw of mapFile.walls) {
-    wallIdx++
     const wall: Wall = {
       id: sw.id,
       kind: "wall",
@@ -318,8 +355,6 @@ export function loadMap(json: string): LoadResult {
   }
 
   // ── Attach doors/openings to their walls ─────────────────────────────
-  let doorCount = 0
-  let windowCount = 0
   for (const sd of mapFile.doors) {
     const targetWall = wallById.get(sd.wallId)
     if (!targetWall) continue // orphan door — skip silently
@@ -337,11 +372,6 @@ export function loadMap(json: string): LoadResult {
       width: sd.width,
     })
 
-    if (kind === "door") {
-      doorCount++
-    } else {
-      windowCount++
-    }
   }
 
   // ── Build names ──────────────────────────────────────────────────────
@@ -385,6 +415,10 @@ export function loadMap(json: string): LoadResult {
   return {
     document: {
       walls,
+      wallPolygons: mapFile.editor?.wallPolygons?.map(polygon => ({
+        id: polygon.id,
+        members: polygon.members.map(member => ({ ...member })),
+      })) || [],
       props,
       referenceImages: [],
     },

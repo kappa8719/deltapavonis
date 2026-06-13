@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
+import { getWallPolygonForEndpoint } from "../lib/wall-topology"
 import { PixiRenderer } from "../renderer/PixiRenderer"
 import { useEditorStore } from "../store"
 
@@ -56,6 +57,64 @@ function ScaleBar() {
 export function Viewport() {
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<PixiRenderer | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const document = useEditorStore(state => state.document)
+  const selection = useEditorStore(state => state.selection)
+  const selectedHandle = useEditorStore(state => state.selectedHandle)
+  const debugMessages = useEditorStore(state => state.debugMessages)
+  const canJoinSelection = useEditorStore(state => state.canJoinSelection)
+  const joinSelectedWalls = useEditorStore(state => state.joinSelectedWalls)
+  const unjoinWallEndpoint = useEditorStore(state => state.unjoinWallEndpoint)
+  const pushDebugMessage = useEditorStore(state => state.pushDebugMessage)
+  const clearDebugMessages = useEditorStore(state => state.clearDebugMessages)
+
+  const selectedEndpointPolygon = selectedHandle
+    ? getWallPolygonForEndpoint(document, selectedHandle.wallId, selectedHandle.end)
+    : null
+  const selectedWallCount = selection.filter(id =>
+    document.walls.some(wall => wall.id === id)
+  ).length
+  const menuActions = [
+    ...(selectedWallCount >= 2
+      ? [{
+        id: "join-selected",
+        label: "Join Selected Walls",
+        disabled: !canJoinSelection(),
+        onClick: () => {
+          pushDebugMessage(
+            `context join click: walls=${selection.join(", ") || "(none)"} enabled=${String(canJoinSelection())}`
+          )
+          if (!canJoinSelection()) return
+          joinSelectedWalls()
+          setContextMenu(null)
+        },
+      }]
+      : []),
+    ...(selectedHandle
+      ? [{
+        id: "unjoin-endpoint",
+        label: "Unjoin Endpoint",
+        disabled: !selectedEndpointPolygon,
+        onClick: () => {
+          pushDebugMessage(
+            `context unjoin click: ${selectedHandle.wallId}:${selectedHandle.end} joined=${String(Boolean(selectedEndpointPolygon))}`
+          )
+          if (!selectedEndpointPolygon) return
+          unjoinWallEndpoint(selectedHandle.wallId, selectedHandle.end)
+          setContextMenu(null)
+        },
+      }]
+      : []),
+  ]
+
+  const openContextMenu = (request: { x: number; y: number }) => {
+    const state = useEditorStore.getState()
+    const hasSelection = state.selection.length > 0 || Boolean(state.selectedHandle)
+    state.pushDebugMessage(
+      `context menu open @(${request.x.toFixed(0)}, ${request.y.toFixed(0)}): selection=[${state.selection.join(", ")}] handle=${state.selectedHandle ? `${state.selectedHandle.wallId}:${state.selectedHandle.end}` : "none"}`
+    )
+    setContextMenu(hasSelection ? request : null)
+  }
 
   useEffect(() => {
     const container = containerRef.current
@@ -63,7 +122,9 @@ export function Viewport() {
 
     let cancelled = false
 
-    PixiRenderer.create(container).then(renderer => {
+    PixiRenderer.create(container, {
+      onContextMenu: openContextMenu,
+    }).then(renderer => {
       if (cancelled) {
         renderer.destroy()
         return
@@ -84,9 +145,65 @@ export function Viewport() {
     }
   }, [])
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null)
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
   return (
     <div className="w-full h-full relative">
       <div ref={containerRef} className="w-full h-full" />
+      {contextMenu && (
+        <>
+          <div className="absolute inset-0 z-20" onMouseDown={() => setContextMenu(null)} />
+          <div
+            className="absolute z-30 min-w-52 overflow-hidden rounded-md border border-border bg-panel shadow-[0_12px_32px_rgba(0,0,0,0.35)]"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onMouseDown={event => event.stopPropagation()}
+          >
+            {menuActions.length > 0 ? menuActions.map(action => (
+              <button
+                key={action.id}
+                onClick={action.onClick}
+                disabled={action.disabled}
+                className="flex w-full items-center px-3 py-2 text-left text-sm transition-colors disabled:cursor-default disabled:text-text-dim/50 hover:bg-muted disabled:hover:bg-transparent"
+              >
+                <span className={action.disabled ? "text-text-dim/50" : "text-text"}>
+                  {action.label}
+                </span>
+              </button>
+            )) : (
+              <div className="px-3 py-2 text-sm text-text-dim/60">No actions available</div>
+            )}
+          </div>
+        </>
+      )}
+      <div className="absolute left-5 bottom-5 z-20 max-w-[420px] rounded-md border border-border bg-bg/92 px-3 py-2 text-xs text-text-dim shadow-[0_8px_24px_rgba(0,0,0,0.28)]">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="font-semibold text-text">Join Debug</span>
+          <button
+            onClick={clearDebugMessages}
+            className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-dim hover:bg-muted"
+          >
+            Clear
+          </button>
+        </div>
+        <div className="space-y-1 font-mono leading-4">
+          {debugMessages.length > 0 ? debugMessages.map((message, index) => (
+            <div key={`${index}-${message}`} className="break-words">
+              {message}
+            </div>
+          )) : (
+            <div>No join debug events yet.</div>
+          )}
+        </div>
+      </div>
       <ScaleGuide />
       <ScaleBar />
     </div>

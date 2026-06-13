@@ -39,7 +39,7 @@ export function StatusBar() {
       <Seg label="Room Size" value={`${roomWidth} x ${roomHeight} u`} />
       <div className="flex-1" />
       <span className="text-text-dim/40 text-xs">
-        MMB drag: pan · wheel: {activeTool === "wall" ? "wall thickness" : "zoom"} · Del: delete
+        MMB drag: pan · wheel: {activeTool === "wall" ? "wall thickness" : "zoom"} · Shift+click: multi-select · right click: join/unjoin · Del: delete
       </span>
     </div>
   )

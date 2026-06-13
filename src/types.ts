@@ -29,6 +29,18 @@ export type Wall = {
   openings: WallOpening[]
 }
 
+export type WallEnd = "start" | "end"
+
+export type WallPolygonMember = {
+  wallId: string
+  end: WallEnd
+}
+
+export type WallPolygon = {
+  id: string
+  members: WallPolygonMember[]
+}
+
 export type Prop = {
   id: string
   kind: "prop"
@@ -54,6 +66,7 @@ export type ReferenceImage = {
 
 export type MapDocument = {
   walls: Wall[]
+  wallPolygons: WallPolygon[]
   props: Prop[]
   referenceImages: ReferenceImage[]
 }
@@ -87,6 +100,14 @@ export type ObjectPatch = Partial<{
 export type PropExtras = {
   rotation?: number
 }
+
+export type WallEndpointHandle = {
+  kind: "wallEndpoint"
+  wallId: string
+  end: WallEnd
+}
+
+export type EditorHandle = WallEndpointHandle
 
 export function getObjectType(doc: MapDocument, id: string): ObjectType | null {
   const obj = getObject(doc, id)

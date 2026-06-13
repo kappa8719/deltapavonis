@@ -5,10 +5,23 @@ import {
   wallLength,
 } from "../lib/map-geometry"
 import {
+  getWallEndpointPosition,
+  getWallPolygonForEndpoint,
+} from "../lib/wall-topology"
+import {
   getObject,
   getWallByOpeningId,
 } from "../types"
-import type { MapDocument, ObjectPatch, Prop, ReferenceImage, Wall, WallOpeningObject } from "../types"
+import type {
+  EditorHandle,
+  MapDocument,
+  ObjectPatch,
+  Prop,
+  ReferenceImage,
+  Wall,
+  WallEnd,
+  WallOpeningObject,
+} from "../types"
 
 function FieldRow({
   label,
@@ -60,16 +73,40 @@ function SectionHeader({ title }: { title: string }) {
   )
 }
 
-function updateWall(
-  wall: Wall,
-  patch: ObjectPatch,
-  updateObject: (id: string, patch: ObjectPatch) => void
-) {
-  updateObject(wall.id, {
-    start: patch.start ?? wall.start,
-    end: patch.end ?? wall.end,
-    thickness: patch.thickness ?? wall.thickness,
-  })
+function EndpointHandleInspector({
+  document,
+  handle,
+  unjoinWallEndpoint,
+}: {
+  document: MapDocument
+  handle: Extract<EditorHandle, { kind: "wallEndpoint" }>
+  unjoinWallEndpoint: (wallId: string, end: WallEnd) => void
+}) {
+  const wall = document.walls.find(candidate => candidate.id === handle.wallId)
+  if (!wall) return null
+
+  const polygon = getWallPolygonForEndpoint(document, handle.wallId, handle.end)
+  const point = getWallEndpointPosition(wall, handle.end)
+
+  return (
+    <>
+      <SectionHeader title="Endpoint Handle" />
+      <div className="px-4 pb-2">
+        <InfoRow label="Wall End" value={handle.end === "start" ? "Start" : "End"} />
+        <InfoRow label="Joined" value={polygon ? "Yes" : "No"} />
+        <FieldRow label="X" value={point.x} readOnly unit="u" />
+        <FieldRow label="Y" value={point.y} readOnly unit="u" />
+        {polygon && (
+          <button
+            onClick={() => unjoinWallEndpoint(handle.wallId, handle.end)}
+            className="w-full mt-3 py-2 text-sm bg-muted hover:bg-border text-text rounded-md transition-colors font-medium"
+          >
+            Unjoin Endpoint
+          </button>
+        )}
+      </div>
+    </>
+  )
 }
 
 function OpeningInspector({
@@ -120,10 +157,12 @@ function OpeningInspector({
 
 function WallInspector({
   wall,
-  updateObject,
+  moveWallEndpoint,
+  setWallThickness,
 }: {
   wall: Wall
-  updateObject: (id: string, patch: ObjectPatch) => void
+  moveWallEndpoint: (wallId: string, end: WallEnd, position: { x: number; y: number }) => void
+  setWallThickness: (wallId: string, thickness: number) => void
 }) {
   return (
     <>
@@ -132,32 +171,32 @@ function WallInspector({
         <FieldRow
           label="Start X"
           value={wall.start.x}
-          onChange={value => updateWall(wall, { start: { ...wall.start, x: value } }, updateObject)}
+          onChange={value => moveWallEndpoint(wall.id, "start", { ...wall.start, x: value })}
           unit="u"
         />
         <FieldRow
           label="Start Y"
           value={wall.start.y}
-          onChange={value => updateWall(wall, { start: { ...wall.start, y: value } }, updateObject)}
+          onChange={value => moveWallEndpoint(wall.id, "start", { ...wall.start, y: value })}
           unit="u"
         />
         <FieldRow
           label="End X"
           value={wall.end.x}
-          onChange={value => updateWall(wall, { end: { ...wall.end, x: value } }, updateObject)}
+          onChange={value => moveWallEndpoint(wall.id, "end", { ...wall.end, x: value })}
           unit="u"
         />
         <FieldRow
           label="End Y"
           value={wall.end.y}
-          onChange={value => updateWall(wall, { end: { ...wall.end, y: value } }, updateObject)}
+          onChange={value => moveWallEndpoint(wall.id, "end", { ...wall.end, y: value })}
           unit="u"
         />
         <FieldRow label="Length" value={Math.round(wallLength(wall) * 100) / 100} unit="u" readOnly />
         <FieldRow
           label="Thickness"
           value={wall.thickness}
-          onChange={value => updateObject(wall.id, { thickness: Math.max(1, value) })}
+          onChange={value => setWallThickness(wall.id, Math.max(1, value))}
           unit="u"
         />
       </div>
@@ -229,13 +268,23 @@ function ReferenceImageInspector({
 export function Inspector() {
   const document = useEditorStore(state => state.document)
   const selection = useEditorStore(state => state.selection)
+  const selectedHandle = useEditorStore(state => state.selectedHandle)
   const updateObject = useEditorStore(state => state.updateObject)
   const deleteSelected = useEditorStore(state => state.deleteSelected)
   const getObjectName = useEditorStore(state => state.getObjectName)
+  const moveWallEndpoint = useEditorStore(state => state.moveWallEndpoint)
+  const setWallThickness = useEditorStore(state => state.setWallThickness)
+  const unjoinWallEndpoint = useEditorStore(state => state.unjoinWallEndpoint)
 
   const id = selection[0]
   const object = id ? getObject(document, id) : null
-  const name = id ? getObjectName(id) : null
+  const name = selectedHandle?.kind === "wallEndpoint"
+    ? getObjectName(selectedHandle.wallId)
+    : id
+      ? getObjectName(id)
+      : null
+
+  const showDelete = Boolean(object)
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -243,7 +292,7 @@ export function Inspector() {
         <span className="text-xs font-semibold text-text-dim uppercase tracking-widest">Inspector</span>
       </div>
 
-      {!object ? (
+      {!object && !selectedHandle ? (
         <div className="px-4 py-8 text-sm text-text-dim text-center">Nothing selected</div>
       ) : (
         <div className="flex-1 overflow-y-auto">
@@ -251,11 +300,23 @@ export function Inspector() {
             <div className="text-base font-semibold text-accent">{name}</div>
           </div>
 
-          {object.kind === "wall" && (
-            <WallInspector wall={object} updateObject={updateObject} />
+          {selectedHandle?.kind === "wallEndpoint" && (
+            <EndpointHandleInspector
+              document={document}
+              handle={selectedHandle}
+              unjoinWallEndpoint={unjoinWallEndpoint}
+            />
           )}
 
-          {(object.kind === "door" || object.kind === "window") && (
+          {object?.kind === "wall" && (
+            <WallInspector
+              wall={object}
+              moveWallEndpoint={moveWallEndpoint}
+              setWallThickness={setWallThickness}
+            />
+          )}
+
+          {(object?.kind === "door" || object?.kind === "window") && (
             <OpeningInspector
               document={document}
               opening={object}
@@ -264,22 +325,24 @@ export function Inspector() {
             />
           )}
 
-          {object.kind === "prop" && (
+          {object?.kind === "prop" && (
             <PropInspector prop={object} updateObject={updateObject} />
           )}
 
-          {object.kind === "referenceImage" && (
+          {object?.kind === "referenceImage" && (
             <ReferenceImageInspector image={object} updateObject={updateObject} />
           )}
 
-          <div className="px-4 py-4 border-t border-border mt-1">
-            <button
-              onClick={deleteSelected}
-              className="w-full py-2 text-sm bg-red-800/80 hover:bg-red-700 text-white rounded-md transition-colors font-medium tracking-wide"
-            >
-              Delete
-            </button>
-          </div>
+          {showDelete && (
+            <div className="px-4 py-4 border-t border-border mt-1">
+              <button
+                onClick={deleteSelected}
+                className="w-full py-2 text-sm bg-red-800/80 hover:bg-red-700 text-white rounded-md transition-colors font-medium tracking-wide"
+              >
+                Delete
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
