@@ -913,13 +913,6 @@ export class PixiRenderer {
       }
     }
 
-    // Reference images (behind objects, check after props)
-    for (const img of [...store.document.referenceImages].reverse()) {
-      if (this.pointHitsReferenceImage(point, img)) {
-        return img.id
-      }
-    }
-
     for (const opening of [...store.document.openings].reverse()) {
       if (this.pointHitsOpening(point, opening, hitPadding)) {
         return opening.id
@@ -936,6 +929,14 @@ export class PixiRenderer {
       if (isLinkedPolygonWall(store.document, polygonWall.id)) continue
       if (pointInPolygon(point, getPolygonWallWorldVertices(polygonWall))) {
         return polygonWall.id
+      }
+    }
+
+    // Reference images render behind map objects, so they are only picked
+    // when no entity under the cursor is selectable.
+    for (const img of [...store.document.referenceImages].reverse()) {
+      if (this.pointHitsReferenceImage(point, img)) {
+        return img.id
       }
     }
 
