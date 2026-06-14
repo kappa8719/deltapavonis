@@ -29,6 +29,18 @@ import type {
 } from "./types"
 import type { LoadResult } from "./lib/map-format"
 
+const STORAGE_KEY = "delta-pavonis-editor-state"
+const STORAGE_VERSION = 1
+
+type PersistedEditorState = {
+  version: typeof STORAGE_VERSION
+  document: MapDocument
+  roomWidth: number
+  roomHeight: number
+  names: Record<string, string>
+  counters: Record<string, number>
+}
+
 function createEditorWall(
   id: string,
   polygonWallId: string,
@@ -110,10 +122,81 @@ function createDefaultRoom({ size, wallThickness }: { size: number; wallThicknes
   }
 }
 
-const initialState = createDefaultRoom({
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function isMapDocument(value: unknown): value is MapDocument {
+  if (!isRecord(value)) return false
+  return Array.isArray(value.walls) &&
+    Array.isArray(value.polygonWalls) &&
+    Array.isArray(value.openings) &&
+    Array.isArray(value.props) &&
+    Array.isArray(value.referenceImages)
+}
+
+function loadPersistedState(): PersistedEditorState | null {
+  if (typeof localStorage === "undefined") return null
+
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed) || parsed.version !== STORAGE_VERSION) return null
+    if (!isMapDocument(parsed.document)) return null
+    if (typeof parsed.roomWidth !== "number" || typeof parsed.roomHeight !== "number") return null
+    if (!isRecord(parsed.names) || !isRecord(parsed.counters)) return null
+
+    return {
+      version: STORAGE_VERSION,
+      document: {
+        ...parsed.document,
+        referenceImages: parsed.document.referenceImages.map(img => ({
+          ...img,
+          locked: img.locked ?? false,
+        })),
+      },
+      roomWidth: parsed.roomWidth,
+      roomHeight: parsed.roomHeight,
+      names: Object.fromEntries(
+        Object.entries(parsed.names).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      ),
+      counters: Object.fromEntries(
+        Object.entries(parsed.counters).filter((entry): entry is [string, number] => typeof entry[1] === "number")
+      ),
+    }
+  } catch (err) {
+    console.warn("Failed to load editor state from local storage", err)
+    return null
+  }
+}
+
+function persistState(state: EditorStore) {
+  if (typeof localStorage === "undefined") return
+
+  const snapshot: PersistedEditorState = {
+    version: STORAGE_VERSION,
+    document: state.document,
+    roomWidth: state.roomWidth,
+    roomHeight: state.roomHeight,
+    names: state.names,
+    counters: state.counters,
+  }
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot))
+  } catch (err) {
+    console.warn("Failed to save editor state to local storage", err)
+  }
+}
+
+const defaultState = createDefaultRoom({
   size: 100,
   wallThickness: DEFAULT_WALL_THICKNESS,
 })
+const persistedState = loadPersistedState()
+const initialState = persistedState ?? defaultState
 
 type OpeningDraft = Omit<Opening, "id" | "kind">
 
@@ -537,6 +620,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     })
   },
 }))
+
+useEditorStore.subscribe(persistState)
 
 export function translatePolygonObject(id: string, dx: number, dy: number) {
   const { document, updateObject } = useEditorStore.getState()

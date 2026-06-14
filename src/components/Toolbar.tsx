@@ -53,28 +53,33 @@ function ReferenceImageImportButton() {
       const file = input.files?.[0]
       if (!file) return
 
-      const blobUrl = URL.createObjectURL(file)
+      const reader = new FileReader()
+      reader.onload = () => {
+        const src = reader.result
+        if (typeof src !== "string") return
 
-      const img = new Image()
-      img.onload = () => {
-        const nw = img.naturalWidth
-        const nh = img.naturalHeight
-        // 1 source pixel = 1 world unit, so width/height = natural pixel dimensions
-        const id = addReferenceImage({
-          src: blobUrl,
-          x: 0,
-          y: 0,
-          width: nw,
-          height: nh,
-          rotation: 0,
-          opacity: 0.5,
-          locked: false,
-          naturalWidth: nw,
-          naturalHeight: nh,
-        })
-        setSelection([id])
+        const img = new Image()
+        img.onload = () => {
+          const nw = img.naturalWidth
+          const nh = img.naturalHeight
+          // 1 source pixel = 1 world unit, so width/height = natural pixel dimensions
+          const id = addReferenceImage({
+            src,
+            x: 0,
+            y: 0,
+            width: nw,
+            height: nh,
+            rotation: 0,
+            opacity: 0.5,
+            locked: false,
+            naturalWidth: nw,
+            naturalHeight: nh,
+          })
+          setSelection([id])
+        }
+        img.src = src
       }
-      img.src = blobUrl
+      reader.readAsDataURL(file)
     }
     input.click()
   }
