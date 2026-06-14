@@ -94,8 +94,26 @@ type OpeningPreview = {
   rotation: number
 }
 
+export type RendererContextMenuRequest = {
+  x: number
+  y: number
+  targetId: string | null
+}
+
+type PixiRendererOptions = {
+  onContextMenu?: (request: RendererContextMenuRequest) => void
+}
+
+type Bounds = {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
 export class PixiRenderer {
   app: PIXI.Application
+  private options: PixiRendererOptions
   private rulerLayer: PIXI.Graphics
   private rulerTextContainer: PIXI.Container
   private gridLayer: PIXI.Graphics
@@ -117,6 +135,7 @@ export class PixiRenderer {
 
   private isDraggingObject = false
   private dragObjectId: string | null = null
+  private dragSelectionIds: string[] = []
   private dragStart = { x: 0, y: 0 }
   private dragPropStart = { x: 0, y: 0 }
   private dragOpeningStart = { x: 0, y: 0 }
@@ -125,13 +144,27 @@ export class PixiRenderer {
     a: { x: 0, y: 0 },
     b: { x: 0, y: 0 },
   }
+  private dragPropStarts = new Map<string, Vec2>()
+  private dragOpeningStarts = new Map<string, Vec2>()
+  private dragPolygonStarts = new Map<string, Vec2[]>()
+  private dragWallStarts = new Map<string, { a: Vec2; b: Vec2 }>()
+  private dragReferenceStarts = new Map<string, Vec2>()
 
   private isDrawingWall = false
   private drawStart = { worldX: 0, worldY: 0 }
   private pointerScreen = { x: 0, y: 0 }
 
-  private constructor(app: PIXI.Application) {
+  private isAreaSelecting = false
+  private areaStartScreen = { x: 0, y: 0 }
+  private areaCurrentScreen = { x: 0, y: 0 }
+  private areaStartWorld: Vec2 = { x: 0, y: 0 }
+  private areaSelectionBase: string[] = []
+  private areaSelectionAdds = false
+  private pendingSingleSelectionId: string | null = null
+
+  private constructor(app: PIXI.Application, options: PixiRendererOptions = {}) {
     this.app = app
+    this.options = options
 
     this.rulerLayer = new PIXI.Graphics()
     this.rulerTextContainer = new PIXI.Container()
@@ -156,7 +189,7 @@ export class PixiRenderer {
     this.render()
   }
 
-  static async create(container: HTMLElement): Promise<PixiRenderer> {
+  static async create(container: HTMLElement, options: PixiRendererOptions = {}): Promise<PixiRenderer> {
     const app = new PIXI.Application()
     await app.init({
       resizeTo: container,
@@ -167,7 +200,7 @@ export class PixiRenderer {
     })
     app.canvas.style.cssText = "display:block;width:100%;height:100%;cursor:crosshair"
     container.appendChild(app.canvas)
-    return new PixiRenderer(app)
+    return new PixiRenderer(app, options)
   }
 
   private screenToWorld(sx: number, sy: number) {
@@ -223,7 +256,26 @@ export class PixiRenderer {
     canvas.addEventListener("mousemove", this.onMouseMove)
     canvas.addEventListener("mouseup", this.onMouseUp)
     canvas.addEventListener("mouseleave", this.onMouseLeave)
-    canvas.addEventListener("contextmenu", event => event.preventDefault())
+    canvas.addEventListener("contextmenu", this.onContextMenu)
+  }
+
+  private onContextMenu = (event: MouseEvent) => {
+    event.preventDefault()
+    const rect = this.app.canvas.getBoundingClientRect()
+    const sx = event.clientX - rect.left
+    const sy = event.clientY - rect.top
+    const store = useEditorStore.getState()
+    const hit = this.hitTest(sx, sy)
+
+    if (hit && !store.selection.includes(hit)) {
+      store.setSelection([...store.selection, hit])
+    }
+
+    this.options.onContextMenu?.({
+      x: event.clientX,
+      y: event.clientY,
+      targetId: hit,
+    })
   }
 
   private onWheel = (event: WheelEvent) => {
@@ -288,14 +340,31 @@ export class PixiRenderer {
       this.previewLayer.clear()
       const hit = this.hitTest(sx, sy)
       if (!hit) {
-        store.setSelection([])
+        const addToSelection = event.shiftKey
+        this.isAreaSelecting = true
+        this.areaStartScreen = { x: sx, y: sy }
+        this.areaCurrentScreen = { x: sx, y: sy }
+        this.areaStartWorld = world
+        this.areaSelectionBase = addToSelection ? store.selection : []
+        this.areaSelectionAdds = addToSelection
+        if (!addToSelection) store.setSelection([])
         return
       }
 
+      if (event.shiftKey) {
+        store.toggleSelection(hit)
+        return
+      }
+
+      const wasSelected = store.selection.includes(hit)
+      const dragSelectionIds = wasSelected ? store.selection : [hit]
       this.isDraggingObject = true
       this.dragObjectId = hit
+      this.dragSelectionIds = dragSelectionIds
       this.dragStart = { x: sx, y: sy }
-      store.setSelection([hit])
+      this.pendingSingleSelectionId = hit
+      if (!wasSelected) store.setSelection([hit])
+      this.captureDragStarts(dragSelectionIds)
 
       const object = getObject(store.document, hit)
       if (!object) return
@@ -383,6 +452,12 @@ export class PixiRenderer {
       return
     }
 
+    if (this.isAreaSelecting) {
+      this.areaCurrentScreen = { x: sx, y: sy }
+      this.renderAreaSelectionPreview()
+      return
+    }
+
     if (store.activeTool === "door" || store.activeTool === "window") {
       this.renderOpeningPreview(world, store.activeTool)
       return
@@ -400,8 +475,18 @@ export class PixiRenderer {
     if (event.button !== 0) return
 
     if (this.isDraggingObject) {
+      this.finalizeObjectSelection(event)
       this.isDraggingObject = false
       this.dragObjectId = null
+      this.dragSelectionIds = []
+      this.pendingSingleSelectionId = null
+    }
+
+    if (this.isAreaSelecting) {
+      this.isAreaSelecting = false
+      this.previewLayer.clear()
+      this.finalizeAreaSelection(event)
+      return
     }
 
     if (!this.isDrawingWall) return
@@ -419,8 +504,82 @@ export class PixiRenderer {
   }
 
   private onMouseLeave = () => {
-    if (!this.isDrawingWall && !this.isDraggingObject) {
+    if (!this.isDrawingWall && !this.isDraggingObject && !this.isAreaSelecting) {
       this.previewLayer.clear()
+    }
+  }
+
+  private finalizeAreaSelection(event: MouseEvent) {
+    const rect = this.app.canvas.getBoundingClientRect()
+    const sx = event.clientX - rect.left
+    const sy = event.clientY - rect.top
+    const dx = sx - this.areaStartScreen.x
+    const dy = sy - this.areaStartScreen.y
+    const dragDistance = Math.hypot(dx, dy)
+    const store = useEditorStore.getState()
+
+    if (dragDistance < 4) {
+      return
+    }
+
+    const endWorld = this.screenToWorld(sx, sy)
+    const areaIds = this.getObjectsInBounds(this.boundsFromPoints(this.areaStartWorld, endWorld))
+    const nextSelection = this.areaSelectionAdds
+      ? [...this.areaSelectionBase, ...areaIds.filter(id => !this.areaSelectionBase.includes(id))]
+      : areaIds
+    store.setSelection(nextSelection)
+  }
+
+  private finalizeObjectSelection(event: MouseEvent) {
+    if (!this.pendingSingleSelectionId) return
+
+    const rect = this.app.canvas.getBoundingClientRect()
+    const sx = event.clientX - rect.left
+    const sy = event.clientY - rect.top
+    const dragDistance = Math.hypot(sx - this.dragStart.x, sy - this.dragStart.y)
+    if (dragDistance >= 4) return
+
+    useEditorStore.getState().setSelection([this.pendingSingleSelectionId])
+  }
+
+  private renderAreaSelectionPreview() {
+    this.previewLayer.clear()
+    const x = Math.min(this.areaStartScreen.x, this.areaCurrentScreen.x)
+    const y = Math.min(this.areaStartScreen.y, this.areaCurrentScreen.y)
+    const width = Math.abs(this.areaCurrentScreen.x - this.areaStartScreen.x)
+    const height = Math.abs(this.areaCurrentScreen.y - this.areaStartScreen.y)
+
+    this.previewLayer.rect(x, y, width, height)
+    this.previewLayer.fill({ color: COLORS.selection, alpha: 0.08 })
+    this.previewLayer.stroke({ color: COLORS.selection, width: 1.25, alpha: 0.95 })
+  }
+
+  private captureDragStarts(ids: string[]) {
+    const { document } = useEditorStore.getState()
+    this.dragPropStarts.clear()
+    this.dragOpeningStarts.clear()
+    this.dragPolygonStarts.clear()
+    this.dragWallStarts.clear()
+    this.dragReferenceStarts.clear()
+
+    for (const id of ids) {
+      const object = getObject(document, id)
+      if (!object) continue
+
+      if (object.kind === "prop") {
+        this.dragPropStarts.set(object.id, { x: object.x, y: object.y })
+      } else if (object.kind === "door" || object.kind === "window") {
+        this.dragOpeningStarts.set(object.id, { ...object.position })
+      } else if (object.kind === "wall") {
+        this.dragWallStarts.set(object.id, {
+          a: { ...object.a },
+          b: { ...object.b },
+        })
+      } else if (object.kind === "polygonWall") {
+        this.dragPolygonStarts.set(object.id, object.vertices.map(vertex => ({ ...vertex })))
+      } else if (object.kind === "referenceImage") {
+        this.dragReferenceStarts.set(object.id, { x: object.x, y: object.y })
+      }
     }
   }
 
@@ -433,6 +592,67 @@ export class PixiRenderer {
 
     const dx = (sx - this.dragStart.x) / (store.zoom * PPU)
     const dy = (sy - this.dragStart.y) / (store.zoom * PPU)
+    const ids = this.dragSelectionIds.length ? this.dragSelectionIds : [this.dragObjectId]
+
+    if (ids.length > 1) {
+      const tx = this.snapToGrid(dx)
+      const ty = this.snapToGrid(dy)
+
+      for (const id of ids) {
+        const propStart = this.dragPropStarts.get(id)
+        if (propStart) {
+          store.updateObject(id, {
+            x: this.snapToGrid(propStart.x + dx),
+            y: this.snapToGrid(propStart.y + dy),
+          })
+          continue
+        }
+
+        const openingStart = this.dragOpeningStarts.get(id)
+        if (openingStart) {
+          store.updateObject(id, {
+            position: {
+              x: this.snapToGrid(openingStart.x + dx),
+              y: this.snapToGrid(openingStart.y + dy),
+            },
+          })
+          continue
+        }
+
+        const wallStart = this.dragWallStarts.get(id)
+        if (wallStart) {
+          store.updateObject(id, {
+            a: {
+              x: wallStart.a.x + tx,
+              y: wallStart.a.y + ty,
+            },
+            b: {
+              x: wallStart.b.x + tx,
+              y: wallStart.b.y + ty,
+            },
+          })
+          continue
+        }
+
+        const polygonStart = this.dragPolygonStarts.get(id)
+        if (polygonStart) {
+          const polygon = getObject(store.document, id)
+          if (polygon?.kind === "polygonWall" && !isLinkedPolygonWall(store.document, id)) {
+            store.updateObject(id, { vertices: translatePolygon(polygonStart, tx, ty) })
+          }
+          continue
+        }
+
+        const referenceStart = this.dragReferenceStarts.get(id)
+        if (referenceStart) {
+          store.updateObject(id, {
+            x: this.snapToGrid(referenceStart.x + dx),
+            y: this.snapToGrid(referenceStart.y + dy),
+          })
+        }
+      }
+      return
+    }
 
     if (object.kind === "prop") {
       const nx = this.snapToGrid(this.dragPropStart.x + dx)
@@ -469,6 +689,13 @@ export class PixiRenderer {
       const nx = this.snapToGrid(this.dragOpeningStart.x + dx)
       const ny = this.snapToGrid(this.dragOpeningStart.y + dy)
       store.updateObject(object.id, { position: { x: nx, y: ny } })
+      return
+    }
+
+    if (object.kind === "referenceImage") {
+      const nx = this.snapToGrid((this.dragReferenceStarts.get(object.id)?.x ?? object.x) + dx)
+      const ny = this.snapToGrid((this.dragReferenceStarts.get(object.id)?.y ?? object.y) + dy)
+      store.updateObject(object.id, { x: nx, y: ny })
     }
   }
 
@@ -613,6 +840,110 @@ export class PixiRenderer {
     const halfW = img.width / 2
     const halfH = img.height / 2
     return localX >= -halfW && localX <= halfW && localY >= -halfH && localY <= halfH
+  }
+
+  private getObjectsInBounds(bounds: Bounds) {
+    const { document } = useEditorStore.getState()
+    const selected: string[] = []
+
+    for (const wall of document.walls) {
+      if (this.polygonIntersectsBounds(getWallQuad(wall), bounds)) selected.push(wall.id)
+    }
+
+    for (const polygonWall of document.polygonWalls) {
+      if (isLinkedPolygonWall(document, polygonWall.id)) continue
+      if (this.polygonIntersectsBounds(getPolygonWallWorldVertices(polygonWall), bounds)) selected.push(polygonWall.id)
+    }
+
+    for (const opening of document.openings) {
+      const vertices = getRotatedRect(opening.position, opening.width, opening.depth, opening.rotation)
+      if (this.polygonIntersectsBounds(vertices, bounds)) selected.push(opening.id)
+    }
+
+    for (const prop of document.props) {
+      if (this.pointInBounds({ x: prop.x, y: prop.y }, bounds)) selected.push(prop.id)
+    }
+
+    for (const img of document.referenceImages) {
+      if (this.polygonIntersectsBounds(this.getReferenceImageWorldCorners(img), bounds)) selected.push(img.id)
+    }
+
+    return selected
+  }
+
+  private boundsFromPoints(a: Vec2, b: Vec2): Bounds {
+    return {
+      minX: Math.min(a.x, b.x),
+      minY: Math.min(a.y, b.y),
+      maxX: Math.max(a.x, b.x),
+      maxY: Math.max(a.y, b.y),
+    }
+  }
+
+  private pointInBounds(point: Vec2, bounds: Bounds) {
+    return point.x >= bounds.minX && point.x <= bounds.maxX && point.y >= bounds.minY && point.y <= bounds.maxY
+  }
+
+  private polygonIntersectsBounds(vertices: Vec2[], bounds: Bounds) {
+    if (!vertices.length) return false
+    if (vertices.some(vertex => this.pointInBounds(vertex, bounds))) return true
+
+    const corners = [
+      { x: bounds.minX, y: bounds.minY },
+      { x: bounds.maxX, y: bounds.minY },
+      { x: bounds.maxX, y: bounds.maxY },
+      { x: bounds.minX, y: bounds.maxY },
+    ]
+
+    if (corners.some(corner => pointInPolygon(corner, vertices))) return true
+
+    const rectEdges = corners.map((corner, index) => [corner, corners[(index + 1) % corners.length]] as const)
+    const polygonEdges = vertices.map((vertex, index) => [vertex, vertices[(index + 1) % vertices.length]] as const)
+
+    return polygonEdges.some(([a, b]) =>
+      rectEdges.some(([c, d]) => this.segmentsIntersect(a, b, c, d))
+    )
+  }
+
+  private segmentsIntersect(a: Vec2, b: Vec2, c: Vec2, d: Vec2) {
+    const direction = (p: Vec2, q: Vec2, r: Vec2) =>
+      (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+    const onSegment = (p: Vec2, q: Vec2, r: Vec2) =>
+      Math.min(p.x, r.x) <= q.x && q.x <= Math.max(p.x, r.x) &&
+      Math.min(p.y, r.y) <= q.y && q.y <= Math.max(p.y, r.y)
+
+    const d1 = direction(a, b, c)
+    const d2 = direction(a, b, d)
+    const d3 = direction(c, d, a)
+    const d4 = direction(c, d, b)
+
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+      return true
+    }
+
+    const epsilon = 0.000001
+    return (Math.abs(d1) < epsilon && onSegment(a, c, b)) ||
+      (Math.abs(d2) < epsilon && onSegment(a, d, b)) ||
+      (Math.abs(d3) < epsilon && onSegment(c, a, d)) ||
+      (Math.abs(d4) < epsilon && onSegment(c, b, d))
+  }
+
+  private getReferenceImageWorldCorners(img: ReferenceImage) {
+    const rad = (img.rotation * Math.PI) / 180
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
+    const hw = img.width / 2
+    const hh = img.height / 2
+
+    return [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh },
+    ].map(local => ({
+      x: local.x * cos - local.y * sin + img.x,
+      y: local.x * sin + local.y * cos + img.y,
+    }))
   }
 
   render() {
@@ -773,7 +1104,8 @@ export class PixiRenderer {
         COLORS.wall
       )
 
-      if (selected.has(polygonWall.id)) {
+      const linkedWall = document.walls.find(wall => wall.polygonWallId === polygonWall.id)
+      if (selected.has(polygonWall.id) || (linkedWall && selected.has(linkedWall.id))) {
         this.drawQuad(
           graphics,
           vertices,
@@ -786,6 +1118,23 @@ export class PixiRenderer {
         )
       }
 
+      this.objectLayer.addChild(graphics)
+    }
+
+    for (const wall of document.walls) {
+      if (!selected.has(wall.id)) continue
+
+      const graphics = new PIXI.Graphics()
+      this.drawQuad(
+        graphics,
+        getWallQuad(wall),
+        toScreen,
+        COLORS.selection,
+        COLORS.selection,
+        0.08,
+        1.8,
+        1
+      )
       this.objectLayer.addChild(graphics)
     }
 
@@ -825,22 +1174,16 @@ export class PixiRenderer {
       this.renderProp(prop.x, prop.y, prop.assetId, selected.has(prop.id), toScreen, zoom)
     }
 
-    if (selection.length === 1) {
-      const object = getObject(document, selection[0])
-      if (!object) return
+    for (const selectedId of selection) {
+      const object = getObject(document, selectedId)
+      if (!object) continue
 
       if (object.kind === "wall") {
-        this.renderWallSelection(object, toScreen, zoom)
-        return
-      }
-
-      if (object.kind === "polygonWall") {
-        this.renderPolygonWallSelection(object, toScreen, zoom)
-        return
-      }
-
-      if (object.kind === "door" || object.kind === "window") {
-        this.renderOpeningSelection(object, toScreen, zoom)
+        this.renderWallSelection(object, toScreen, zoom, selection.length === 1)
+      } else if (object.kind === "polygonWall") {
+        this.renderPolygonWallSelection(object, toScreen, zoom, selection.length === 1)
+      } else if (object.kind === "door" || object.kind === "window") {
+        this.renderOpeningSelection(object, toScreen, zoom, selection.length === 1)
       }
     }
   }
@@ -1052,25 +1395,36 @@ export class PixiRenderer {
   private renderWallSelection(
     wall: Wall,
     toScreen: (wx: number, wy: number) => { x: number; y: number },
-    zoom: number
+    zoom: number,
+    showLabel: boolean
   ) {
     const graphics = this.overlayLayer
     const start = toScreen(wall.a.x, wall.a.y)
     const end = toScreen(wall.b.x, wall.b.y)
+    const outline = getWallQuad(wall).map(point => toScreen(point.x, point.y))
     const normal = wallNormal(wall)
     const midpoint = wallLocalToWorld(wall, wallLength(wall) / 2, wall.thickness / 2 + 4)
     const midpointScreen = toScreen(midpoint.x, midpoint.y)
     const radius = 5
 
+    graphics.moveTo(outline[0].x, outline[0].y)
+    for (const point of outline.slice(1)) {
+      graphics.lineTo(point.x, point.y)
+    }
+    graphics.closePath()
+    graphics.stroke({ color: COLORS.selection, width: 2, alpha: 1 })
+
     graphics.moveTo(start.x, start.y)
     graphics.lineTo(end.x, end.y)
-    graphics.stroke({ color: COLORS.selection, width: 1.5, alpha: 1 })
+    graphics.stroke({ color: COLORS.selection, width: 1.2, alpha: 0.65 })
 
     for (const point of [start, end]) {
       graphics.circle(point.x, point.y, radius)
       graphics.fill({ color: COLORS.handleFill, alpha: 1 })
       graphics.stroke({ color: 0xffffff, width: 1, alpha: 0.6 })
     }
+
+    if (!showLabel) return
 
     const label = new PIXI.Text({
       text: `${Math.round(wallLength(wall))}u · ${Math.round(wall.thickness)}u`,
@@ -1089,7 +1443,8 @@ export class PixiRenderer {
   private renderPolygonWallSelection(
     polygonWall: PolygonWall,
     toScreen: (wx: number, wy: number) => { x: number; y: number },
-    zoom: number
+    zoom: number,
+    showLabel: boolean
   ) {
     const graphics = this.overlayLayer
     const vertices = getPolygonWallWorldVertices(polygonWall)
@@ -1108,6 +1463,8 @@ export class PixiRenderer {
       graphics.fill({ color: COLORS.handleFill, alpha: 1 })
       graphics.stroke({ color: 0xffffff, width: 1, alpha: 0.6 })
     }
+
+    if (!showLabel) return
 
     const centroid = polygonCentroid(vertices)
     const centroidScreen = toScreen(centroid.x, centroid.y)
@@ -1128,7 +1485,8 @@ export class PixiRenderer {
   private renderOpeningSelection(
     opening: Opening,
     toScreen: (wx: number, wy: number) => { x: number; y: number },
-    zoom: number
+    zoom: number,
+    showLabel: boolean
   ) {
     const centerScreen = toScreen(opening.position.x, opening.position.y)
     const radius = 4.5
@@ -1141,6 +1499,8 @@ export class PixiRenderer {
     this.overlayLayer.circle(centerScreen.x, centerScreen.y, radius)
     this.overlayLayer.fill({ color: COLORS.selection, alpha: 1 })
     this.overlayLayer.stroke({ color: 0xffffff, width: 1, alpha: 0.6 })
+
+    if (!showLabel) return
 
     const label = new PIXI.Text({
       text: `${Math.round(opening.width)}u x ${Math.round(opening.depth)}u`,
@@ -1260,6 +1620,7 @@ export class PixiRenderer {
     canvas.removeEventListener("mousemove", this.onMouseMove)
     canvas.removeEventListener("mouseup", this.onMouseUp)
     canvas.removeEventListener("mouseleave", this.onMouseLeave)
+    canvas.removeEventListener("contextmenu", this.onContextMenu)
     canvas.parentNode?.removeChild(canvas)
     // Clean up reference image containers
     for (const container of this.referenceContainers.values()) {

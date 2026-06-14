@@ -33,6 +33,7 @@ export function Hierarchy() {
   const document = useEditorStore(state => state.document)
   const selection = useEditorStore(state => state.selection)
   const setSelection = useEditorStore(state => state.setSelection)
+  const toggleSelection = useEditorStore(state => state.toggleSelection)
   const getObjectName = useEditorStore(state => state.getObjectName)
   const [search, setSearch] = useState("")
   const [worldOpen, setWorldOpen] = useState(true)
@@ -117,7 +118,13 @@ export function Hierarchy() {
               return (
                 <button
                   key={item.id}
-                  onClick={() => setSelection([item.id])}
+                  onClick={event => {
+                    if (event.shiftKey) {
+                      toggleSelection(item.id)
+                      return
+                    }
+                    setSelection([item.id])
+                  }}
                   className={cn(
                     "flex items-center w-full pl-7 pr-3 py-1.5 gap-2 text-sm truncate transition-colors",
                     isSelected ? "bg-accent/20 text-accent" : "text-text hover:bg-muted"

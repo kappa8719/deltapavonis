@@ -1,6 +1,13 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { PixiRenderer } from "../renderer/PixiRenderer"
 import { useEditorStore } from "../store"
+import { getObject } from "../types"
+
+type ContextMenuState = {
+  x: number
+  y: number
+  targetId: string | null
+} | null
 
 function ScaleGuide() {
   return (
@@ -56,6 +63,16 @@ function ScaleBar() {
 export function Viewport() {
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<PixiRenderer | null>(null)
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
+  const document = useEditorStore(s => s.document)
+  const selection = useEditorStore(s => s.selection)
+  const setSelection = useEditorStore(s => s.setSelection)
+  const convertWallToPolygon = useEditorStore(s => s.convertWallToPolygon)
+
+  const contextWallIds = contextMenu
+    ? (contextMenu.targetId && !selection.includes(contextMenu.targetId) ? [contextMenu.targetId] : selection)
+      .filter(id => getObject(document, id)?.kind === "wall")
+    : []
 
   useEffect(() => {
     const container = containerRef.current
@@ -63,7 +80,9 @@ export function Viewport() {
 
     let cancelled = false
 
-    PixiRenderer.create(container).then(renderer => {
+    PixiRenderer.create(container, {
+      onContextMenu: request => setContextMenu(request),
+    }).then(renderer => {
       if (cancelled) {
         renderer.destroy()
         return
@@ -84,9 +103,42 @@ export function Viewport() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!contextMenu) return
+
+    const close = () => setContextMenu(null)
+    window.addEventListener("mousedown", close)
+    window.addEventListener("wheel", close, { passive: true })
+    return () => {
+      window.removeEventListener("mousedown", close)
+      window.removeEventListener("wheel", close)
+    }
+  }, [contextMenu])
+
   return (
     <div className="w-full h-full relative">
       <div ref={containerRef} className="w-full h-full" />
+      {contextMenu && contextWallIds.length > 0 && (
+        <div
+          className="fixed z-50 min-w-36 overflow-hidden rounded-md border border-border bg-panel shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onMouseDown={event => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="block w-full px-3 py-2 text-left text-sm text-text hover:bg-muted"
+            onClick={() => {
+              const polygonIds = contextWallIds
+                .map(wallId => convertWallToPolygon(wallId))
+                .filter((id): id is string => Boolean(id))
+              setSelection(polygonIds)
+              setContextMenu(null)
+            }}
+          >
+            To polygon
+          </button>
+        </div>
+      )}
       <ScaleGuide />
       <ScaleBar />
     </div>
