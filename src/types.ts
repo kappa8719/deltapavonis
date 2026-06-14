@@ -58,6 +58,7 @@ export type ReferenceImage = {
   height: number
   rotation: number
   opacity: number
+  locked: boolean
   naturalWidth: number
   naturalHeight: number
 }
@@ -91,6 +92,7 @@ export type ObjectPatch = Partial<{
   src: string
   rotation: number
   opacity: number
+  locked: boolean
 }>
 
 /** Fields that can appear on a Prop beyond the core type. */

@@ -52,6 +52,28 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   )
 }
 
+function CheckboxRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="flex items-center gap-2 py-1">
+      <span className="text-text-dim text-sm shrink-0 w-20">{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={event => onChange(event.target.checked)}
+        className="h-4 w-4 accent-accent"
+      />
+    </label>
+  )
+}
+
 function SectionHeader({ title }: { title: string }) {
   return (
     <div className="px-4 pt-4 pb-2">
@@ -249,25 +271,45 @@ function ReferenceImageInspector({
     <>
       <SectionHeader title="Reference Image" />
       <div className="px-4 pb-2">
-        <FieldRow label="X" value={image.x} onChange={value => updateObject(image.id, { x: value })} unit="u" />
-        <FieldRow label="Y" value={image.y} onChange={value => updateObject(image.id, { y: value })} unit="u" />
+        <CheckboxRow
+          label="Locked"
+          checked={image.locked}
+          onChange={checked => updateObject(image.id, { locked: checked })}
+        />
+        <FieldRow
+          label="X"
+          value={image.x}
+          onChange={value => updateObject(image.id, { x: value })}
+          unit="u"
+          readOnly={image.locked}
+        />
+        <FieldRow
+          label="Y"
+          value={image.y}
+          onChange={value => updateObject(image.id, { y: value })}
+          unit="u"
+          readOnly={image.locked}
+        />
         <FieldRow
           label="Width"
           value={image.width}
           onChange={value => updateObject(image.id, { width: Math.max(1, value) })}
           unit="u"
+          readOnly={image.locked}
         />
         <FieldRow
           label="Height"
           value={image.height}
           onChange={value => updateObject(image.id, { height: Math.max(1, value) })}
           unit="u"
+          readOnly={image.locked}
         />
         <FieldRow
           label="Rotation"
           value={image.rotation}
           onChange={value => updateObject(image.id, { rotation: value })}
           unit="deg"
+          readOnly={image.locked}
         />
         <FieldRow
           label="Opacity"

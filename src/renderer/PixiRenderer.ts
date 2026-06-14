@@ -699,7 +699,7 @@ export class PixiRenderer {
         })
       } else if (object.kind === "polygonWall") {
         this.dragPolygonStarts.set(object.id, object.vertices.map(vertex => ({ ...vertex })))
-      } else if (object.kind === "referenceImage") {
+      } else if (object.kind === "referenceImage" && !object.locked) {
         this.dragReferenceStarts.set(object.id, { x: object.x, y: object.y })
       }
     }
@@ -814,7 +814,7 @@ export class PixiRenderer {
       return
     }
 
-    if (object.kind === "referenceImage") {
+    if (object.kind === "referenceImage" && !object.locked) {
       const nx = this.snapToGrid((this.dragReferenceStarts.get(object.id)?.x ?? object.x) + dx)
       const ny = this.snapToGrid((this.dragReferenceStarts.get(object.id)?.y ?? object.y) + dy)
       store.updateObject(object.id, { x: nx, y: ny })
@@ -935,6 +935,7 @@ export class PixiRenderer {
     // Reference images render behind map objects, so they are only picked
     // when no entity under the cursor is selectable.
     for (const img of [...store.document.referenceImages].reverse()) {
+      if (img.locked) continue
       if (this.pointHitsReferenceImage(point, img)) {
         return img.id
       }
@@ -1037,6 +1038,7 @@ export class PixiRenderer {
     }
 
     for (const img of document.referenceImages) {
+      if (img.locked) continue
       if (this.polygonIntersectsBounds(this.getReferenceImageWorldCorners(img), bounds)) selected.push(img.id)
     }
 

@@ -68,6 +68,7 @@ function ReferenceImageImportButton() {
           height: nh,
           rotation: 0,
           opacity: 0.5,
+          locked: false,
           naturalWidth: nw,
           naturalHeight: nh,
         })

@@ -270,7 +270,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         ...state.document,
         referenceImages: [
           ...state.document.referenceImages,
-          { id, kind: "referenceImage", ...img },
+          { id, kind: "referenceImage", ...img, locked: img.locked ?? false },
         ],
       },
       names: { ...state.names, [id]: name },
@@ -445,6 +445,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                   rotation: patch.rotation ?? candidate.rotation,
                   opacity: patch.opacity ?? candidate.opacity,
                   src: patch.src ?? candidate.src,
+                  locked: patch.locked ?? candidate.locked ?? false,
                 }
                 : candidate
             ),
@@ -518,7 +519,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   importMap: result => {
     set({
-      document: result.document,
+      document: {
+        ...result.document,
+        referenceImages: result.document.referenceImages.map(img => ({
+          ...img,
+          locked: img.locked ?? false,
+        })),
+      },
       names: result.names,
       counters: result.counters,
       roomWidth: result.roomWidth,
