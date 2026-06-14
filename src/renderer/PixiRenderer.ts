@@ -1,28 +1,26 @@
 import * as PIXI from "pixi.js"
 import {
-  canPlaceOpeningOnWall,
-  clamp,
-  findNearestValidOpeningOffset,
+  createWallPolygon,
   getOpeningDefaultWidth,
-  getOpeningInterval,
-  getOpeningQuad,
+  getRotatedRect,
   getWallQuad,
-  getWallSolidIntervals,
   PIXELS_PER_UNIT,
-  projectPointOntoWall,
+  pointInPolygon,
+  polygonCentroid,
+  translatePolygon,
   wallLength,
   wallLocalToWorld,
   wallNormal,
-  worldToWallLocal,
 } from "../lib/map-geometry"
 import { useEditorStore } from "../store"
-import { getObject, getWallByOpeningId } from "../types"
+import { getObject, isLinkedPolygonWall } from "../types"
 import type {
   MapDocument,
+  Opening,
+  PolygonWall,
   ReferenceImage,
   Vec2,
   Wall,
-  WallOpening,
   WallOpeningKind,
 } from "../types"
 
@@ -89,11 +87,11 @@ function getGridSteps(zoom: number) {
 }
 
 type OpeningPreview = {
-  wall: Wall
   kind: WallOpeningKind
   width: number
-  offset: number
-  valid: boolean
+  depth: number
+  position: Vec2
+  rotation: number
 }
 
 export class PixiRenderer {
@@ -121,9 +119,11 @@ export class PixiRenderer {
   private dragObjectId: string | null = null
   private dragStart = { x: 0, y: 0 }
   private dragPropStart = { x: 0, y: 0 }
+  private dragOpeningStart = { x: 0, y: 0 }
+  private dragPolygonStart: Vec2[] = []
   private dragWallStart = {
-    start: { x: 0, y: 0 },
-    end: { x: 0, y: 0 },
+    a: { x: 0, y: 0 },
+    b: { x: 0, y: 0 },
   }
 
   private isDrawingWall = false
@@ -305,12 +305,21 @@ export class PixiRenderer {
         return
       }
 
+      if (object.kind === "door" || object.kind === "window") {
+        this.dragOpeningStart = { ...object.position }
+        return
+      }
+
       if (object.kind === "wall") {
         this.dragWallStart = {
-          start: { ...object.start },
-          end: { ...object.end },
+          a: { ...object.a },
+          b: { ...object.b },
         }
         return
+      }
+
+      if (object.kind === "polygonWall") {
+        this.dragPolygonStart = object.vertices.map(vertex => ({ ...vertex }))
       }
       return
     }
@@ -325,11 +334,21 @@ export class PixiRenderer {
 
     if (tool === "door" || tool === "window") {
       const preview = this.getOpeningPreview(world, tool)
-      if (!preview?.valid) return
+      if (!preview) return
 
       const id = tool === "door"
-        ? store.addDoor(preview.wall.id, { offset: preview.offset, width: preview.width })
-        : store.addWindow(preview.wall.id, { offset: preview.offset, width: preview.width })
+        ? store.addDoor({
+          position: preview.position,
+          rotation: preview.rotation,
+          width: preview.width,
+          depth: preview.depth,
+        })
+        : store.addWindow({
+          position: preview.position,
+          rotation: preview.rotation,
+          width: preview.width,
+          depth: preview.depth,
+        })
 
       if (id) store.setSelection([id])
     }
@@ -426,28 +445,31 @@ export class PixiRenderer {
       const tx = this.snapToGrid(dx)
       const ty = this.snapToGrid(dy)
       store.updateObject(object.id, {
-        start: {
-          x: this.dragWallStart.start.x + tx,
-          y: this.dragWallStart.start.y + ty,
+        a: {
+          x: this.dragWallStart.a.x + tx,
+          y: this.dragWallStart.a.y + ty,
         },
-        end: {
-          x: this.dragWallStart.end.x + tx,
-          y: this.dragWallStart.end.y + ty,
+        b: {
+          x: this.dragWallStart.b.x + tx,
+          y: this.dragWallStart.b.y + ty,
         },
       })
       return
     }
 
-    const wall = getWallByOpeningId(store.document, object.id)
-    if (!wall) return
+    if (object.kind === "polygonWall") {
+      if (isLinkedPolygonWall(store.document, object.id)) return
+      const tx = this.snapToGrid(dx)
+      const ty = this.snapToGrid(dy)
+      store.updateObject(object.id, { vertices: translatePolygon(this.dragPolygonStart, tx, ty) })
+      return
+    }
 
-    const world = this.screenToWorld(sx, sy)
-    const projection = projectPointOntoWall(world, wall)
-    const desiredOffset = this.snapToGrid(projection.offset)
-    const nextOffset = findNearestValidOpeningOffset(wall, object.width, desiredOffset, object.id)
-    if (nextOffset == null) return
-
-    store.updateObject(object.id, { offset: nextOffset })
+    if (object.kind === "door" || object.kind === "window") {
+      const nx = this.snapToGrid(this.dragOpeningStart.x + dx)
+      const ny = this.snapToGrid(this.dragOpeningStart.y + dy)
+      store.updateObject(object.id, { position: { x: nx, y: ny } })
+    }
   }
 
   private finalizeWall(x1: number, y1: number, x2: number, y2: number) {
@@ -456,10 +478,9 @@ export class PixiRenderer {
     if (length < store.snapSize) return
 
     const id = store.addWall({
-      start: { x: x1, y: y1 },
-      end: { x: x2, y: y2 },
+      a: { x: x1, y: y1 },
+      b: { x: x2, y: y2 },
       thickness: store.wallToolThickness,
-      openings: [],
     })
     store.setSelection([id])
   }
@@ -472,10 +493,10 @@ export class PixiRenderer {
     const wall: Wall = {
       id: "preview",
       kind: "wall",
-      start: { x: x1, y: y1 },
-      end: { x: x2, y: y2 },
+      a: { x: x1, y: y1 },
+      b: { x: x2, y: y2 },
       thickness: wallToolThickness,
-      openings: [],
+      polygonWallId: "preview-polygon",
     }
     const toScreen = this.getToScreen()
     this.drawQuad(
@@ -491,43 +512,15 @@ export class PixiRenderer {
   }
 
   private getOpeningPreview(point: Vec2, kind: WallOpeningKind): OpeningPreview | null {
-    const { document } = useEditorStore.getState()
+    const { wallToolThickness } = useEditorStore.getState()
     const width = getOpeningDefaultWidth(kind)
 
-    let nearest: { wall: Wall; score: number; projectionOffset: number; withinSegment: boolean } | null = null
-
-    for (const wall of document.walls) {
-      const projection = projectPointOntoWall(point, wall)
-      const endDistance = Math.hypot(
-        point.x - projection.clampedPoint.x,
-        point.y - projection.clampedPoint.y
-      )
-      const score = projection.withinSegment ? projection.distance : endDistance
-
-      if (!nearest || score < nearest.score) {
-        nearest = {
-          wall,
-          score,
-          projectionOffset: projection.offset,
-          withinSegment: projection.withinSegment,
-        }
-      }
-    }
-
-    if (!nearest) return null
-
-    const length = wallLength(nearest.wall)
-    const desiredOffset = this.snapToGrid(nearest.projectionOffset)
-    const previewOffset = clamp(desiredOffset, 0, length)
-    const valid = nearest.withinSegment &&
-      canPlaceOpeningOnWall(nearest.wall, { offset: desiredOffset, width })
-
     return {
-      wall: nearest.wall,
       kind,
       width,
-      offset: previewOffset,
-      valid,
+      depth: wallToolThickness,
+      position: { x: this.snapToGrid(point.x), y: this.snapToGrid(point.y) },
+      rotation: 0,
     }
   }
 
@@ -537,22 +530,23 @@ export class PixiRenderer {
     if (!preview) return
 
     const toScreen = this.getToScreen()
-    const previewOpening: WallOpening = {
+    const previewOpening: Opening = {
       id: "preview",
       kind,
-      offset: preview.offset,
+      position: preview.position,
+      rotation: preview.rotation,
       width: preview.width,
+      depth: preview.depth,
     }
     const color = kind === "door" ? COLORS.doorFill : COLORS.windowFill
-    const stroke = preview.valid ? COLORS.selection : COLORS.invalid
 
     this.drawQuad(
       this.previewLayer,
-      getOpeningQuad(preview.wall, previewOpening),
+      getRotatedRect(previewOpening.position, previewOpening.width, previewOpening.depth, previewOpening.rotation),
       toScreen,
       color,
-      stroke,
-      preview.valid ? 0.45 : 0.25,
+      COLORS.selection,
+      0.45,
       1.5,
       0.9
     )
@@ -577,11 +571,9 @@ export class PixiRenderer {
       }
     }
 
-    for (const wall of [...store.document.walls].reverse()) {
-      for (const opening of [...wall.openings].reverse()) {
-        if (this.pointHitsOpening(point, wall, opening, hitPadding)) {
-          return opening.id
-        }
+    for (const opening of [...store.document.openings].reverse()) {
+      if (this.pointHitsOpening(point, opening, hitPadding)) {
+        return opening.id
       }
     }
 
@@ -591,26 +583,23 @@ export class PixiRenderer {
       }
     }
 
+    for (const polygonWall of [...store.document.polygonWalls].reverse()) {
+      if (isLinkedPolygonWall(store.document, polygonWall.id)) continue
+      if (pointInPolygon(point, polygonWall.vertices)) {
+        return polygonWall.id
+      }
+    }
+
     return null
   }
 
-  private pointHitsOpening(point: Vec2, wall: Wall, opening: WallOpening, padding: number) {
-    const local = worldToWallLocal(point, wall)
-    const interval = getOpeningInterval(opening)
-    return (
-      local.along >= interval.from - padding &&
-      local.along <= interval.to + padding &&
-      Math.abs(local.perp) <= wall.thickness / 2 + padding
-    )
+  private pointHitsOpening(point: Vec2, opening: Opening, padding: number) {
+    const expanded = getRotatedRect(opening.position, opening.width + padding * 2, opening.depth + padding * 2, opening.rotation)
+    return pointInPolygon(point, expanded)
   }
 
   private pointHitsWall(point: Vec2, wall: Wall, padding: number) {
-    const local = worldToWallLocal(point, wall)
-    if (Math.abs(local.perp) > wall.thickness / 2 + padding) return false
-
-    return getWallSolidIntervals(wall).some(interval =>
-      local.along >= interval.from - padding && local.along <= interval.to + padding
-    )
+    return pointInPolygon(point, createWallPolygon({ ...wall, thickness: wall.thickness + padding * 2 }))
   }
 
   private pointHitsReferenceImage(point: Vec2, img: ReferenceImage): boolean {
@@ -772,23 +761,21 @@ export class PixiRenderer {
 
     const selected = new Set(selection)
 
-    for (const wall of document.walls) {
+    for (const polygonWall of document.polygonWalls) {
       const graphics = new PIXI.Graphics()
 
-      for (const interval of getWallSolidIntervals(wall)) {
-        this.drawQuad(
-          graphics,
-          getWallQuad(wall, interval.from, interval.to),
-          toScreen,
-          COLORS.wallFill,
-          COLORS.wall
-        )
-      }
+      this.drawQuad(
+        graphics,
+        polygonWall.vertices,
+        toScreen,
+        COLORS.wallFill,
+        COLORS.wall
+      )
 
-      if (selected.has(wall.id)) {
+      if (selected.has(polygonWall.id)) {
         this.drawQuad(
           graphics,
-          getWallQuad(wall),
+          polygonWall.vertices,
           toScreen,
           COLORS.selection,
           COLORS.selection,
@@ -799,38 +786,38 @@ export class PixiRenderer {
       }
 
       this.objectLayer.addChild(graphics)
+    }
 
-      for (const opening of wall.openings) {
-        const openingGraphics = new PIXI.Graphics()
-        const fillColor = opening.kind === "door" ? COLORS.doorFill : COLORS.windowFill
-        const strokeColor = opening.kind === "door" ? COLORS.door : COLORS.window
+    for (const opening of document.openings) {
+      const openingGraphics = new PIXI.Graphics()
+      const fillColor = opening.kind === "door" ? COLORS.doorFill : COLORS.windowFill
+      const strokeColor = opening.kind === "door" ? COLORS.door : COLORS.window
 
+      this.drawQuad(
+        openingGraphics,
+        getRotatedRect(opening.position, opening.width, opening.depth, opening.rotation),
+        toScreen,
+        fillColor,
+        strokeColor,
+        0.38,
+        1.1,
+        0.95
+      )
+
+      if (selected.has(opening.id)) {
         this.drawQuad(
           openingGraphics,
-          getOpeningQuad(wall, opening),
+          getRotatedRect(opening.position, opening.width + 1.5, opening.depth + 1.5, opening.rotation),
           toScreen,
-          fillColor,
-          strokeColor,
-          0.38,
-          1.1,
-          0.95
+          COLORS.selection,
+          COLORS.selection,
+          0.08,
+          1.7,
+          1
         )
-
-        if (selected.has(opening.id)) {
-          this.drawQuad(
-            openingGraphics,
-            getOpeningQuad(wall, opening, wall.thickness + 1.5),
-            toScreen,
-            COLORS.selection,
-            COLORS.selection,
-            0.08,
-            1.7,
-            1
-          )
-        }
-
-        this.objectLayer.addChild(openingGraphics)
       }
+
+      this.objectLayer.addChild(openingGraphics)
     }
 
     for (const prop of document.props) {
@@ -846,9 +833,13 @@ export class PixiRenderer {
         return
       }
 
+      if (object.kind === "polygonWall") {
+        this.renderPolygonWallSelection(object, toScreen, zoom)
+        return
+      }
+
       if (object.kind === "door" || object.kind === "window") {
-        const wall = getWallByOpeningId(document, object.id)
-        if (wall) this.renderOpeningSelection(wall, object, toScreen, zoom)
+        this.renderOpeningSelection(object, toScreen, zoom)
       }
     }
   }
@@ -1063,8 +1054,8 @@ export class PixiRenderer {
     zoom: number
   ) {
     const graphics = this.overlayLayer
-    const start = toScreen(wall.start.x, wall.start.y)
-    const end = toScreen(wall.end.x, wall.end.y)
+    const start = toScreen(wall.a.x, wall.a.y)
+    const end = toScreen(wall.b.x, wall.b.y)
     const normal = wallNormal(wall)
     const midpoint = wallLocalToWorld(wall, wallLength(wall) / 2, wall.thickness / 2 + 4)
     const midpointScreen = toScreen(midpoint.x, midpoint.y)
@@ -1094,17 +1085,55 @@ export class PixiRenderer {
     this.objectLayer.addChild(label)
   }
 
-  private renderOpeningSelection(
-    wall: Wall,
-    opening: WallOpening,
+  private renderPolygonWallSelection(
+    polygonWall: PolygonWall,
     toScreen: (wx: number, wy: number) => { x: number; y: number },
     zoom: number
   ) {
-    const interval = getOpeningInterval(opening)
-    const center = wallLocalToWorld(wall, opening.offset, 0)
-    const centerScreen = toScreen(center.x, center.y)
+    const graphics = this.overlayLayer
+    const points = polygonWall.vertices.map(vertex => toScreen(vertex.x, vertex.y))
+    if (!points.length) return
+
+    graphics.moveTo(points[0].x, points[0].y)
+    for (const point of points.slice(1)) {
+      graphics.lineTo(point.x, point.y)
+    }
+    graphics.closePath()
+    graphics.stroke({ color: COLORS.selection, width: 2, alpha: 1 })
+
+    for (const point of points) {
+      graphics.circle(point.x, point.y, 4.5)
+      graphics.fill({ color: COLORS.handleFill, alpha: 1 })
+      graphics.stroke({ color: 0xffffff, width: 1, alpha: 0.6 })
+    }
+
+    const centroid = polygonCentroid(polygonWall.vertices)
+    const centroidScreen = toScreen(centroid.x, centroid.y)
+    const label = new PIXI.Text({
+      text: `${polygonWall.vertices.length} vertices`,
+      style: {
+        fontSize: Math.max(10, Math.min(13, 11 * zoom)),
+        fill: COLORS.dimLabel,
+        fontFamily: "system-ui",
+        fontWeight: "500",
+      },
+    })
+    label.x = centroidScreen.x - label.width / 2
+    label.y = centroidScreen.y - label.height / 2
+    this.objectLayer.addChild(label)
+  }
+
+  private renderOpeningSelection(
+    opening: Opening,
+    toScreen: (wx: number, wy: number) => { x: number; y: number },
+    zoom: number
+  ) {
+    const centerScreen = toScreen(opening.position.x, opening.position.y)
     const radius = 4.5
-    const labelAnchor = wallLocalToWorld(wall, interval.to, wall.thickness / 2 + 5)
+    const labelAnchor = {
+      x: opening.position.x + opening.width / 2,
+      y: opening.position.y - opening.depth / 2 - 5,
+    }
     const labelScreen = toScreen(labelAnchor.x, labelAnchor.y)
 
     this.overlayLayer.circle(centerScreen.x, centerScreen.y, radius)
@@ -1112,7 +1141,7 @@ export class PixiRenderer {
     this.overlayLayer.stroke({ color: 0xffffff, width: 1, alpha: 0.6 })
 
     const label = new PIXI.Text({
-      text: `${Math.round(opening.width)}u @ ${Math.round(opening.offset)}u`,
+      text: `${Math.round(opening.width)}u x ${Math.round(opening.depth)}u`,
       style: {
         fontSize: Math.max(10, Math.min(13, 11 * zoom)),
         fill: COLORS.dimLabel,

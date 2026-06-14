@@ -1,21 +1,11 @@
 /**
  * Delta Pavonis Map Format — load/save for the editor.
- *
- * Spec: https://github.com/delta-pavonis/map-format (internal)
- *
- * This module defines the spec types, validates incoming map files, and
- * converts between the editor's internal model (walls + openings + props)
- * and the on-disk JSON format (surfaces + walls + doors + objects + zones).
  */
 
-import { wallLength } from "./map-geometry"
-import type { MapDocument, Wall, Prop } from "../types"
+import { createWallPolygon, isValidPolygon } from "./map-geometry"
+import type { MapDocument, Opening, PolygonWall, Prop, Wall } from "../types"
 
-// ────────────────────────────────────────────────────────────────────────────
-// Spec types (mirrors the format spec exactly)
-// ────────────────────────────────────────────────────────────────────────────
-
-export const MAP_FORMAT_VERSION = 1 as const
+export const MAP_FORMAT_VERSION = 2 as const
 
 export type Vec2 = { x: number; y: number }
 
@@ -27,7 +17,7 @@ export type MapFile = {
   bounds: Rect
   surfaces: Surface[]
   walls: SpecWall[]
-  doors: SpecDoor[]
+  openings: SpecOpening[]
   objects: SpecObject[]
   zones?: SpecZone[]
 }
@@ -47,20 +37,31 @@ export type Surface = {
   edge?: "auto" | "hard" | "soft"
 }
 
-export type SpecWall = {
+export type SpecEditorWall = {
   id: string
-  from: Vec2
-  to: Vec2
-  width?: number
+  kind: "wall"
+  a: Vec2
+  b: Vec2
+  thickness: number
+  polygonWallId: string
+}
+
+export type SpecPolygonWall = {
+  id: string
+  kind: "polygonWall"
+  vertices: Vec2[]
   material?: string
 }
 
-export type SpecDoor = {
+export type SpecWall = SpecEditorWall | SpecPolygonWall
+
+export type SpecOpening = {
   id: string
-  wallId: string
-  t: number
+  kind: "door" | "window"
+  position: Vec2
+  rotation: number
   width: number
-  kind?: string
+  depth: number
 }
 
 export type SpecObject = {
@@ -78,20 +79,12 @@ export type SpecZone = {
   properties?: Record<string, unknown>
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Error type
-// ────────────────────────────────────────────────────────────────────────────
-
 export class MapFormatError extends Error {
   constructor(message: string) {
     super(`Map format error: ${message}`)
     this.name = "MapFormatError"
   }
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Validation
-// ────────────────────────────────────────────────────────────────────────────
 
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new MapFormatError(message)
@@ -102,64 +95,67 @@ function isVec2(v: unknown): v is Vec2 {
 }
 
 function isPolygon(v: unknown): v is Vec2[] {
-  return Array.isArray(v) && v.length >= 3 && v.every(p => isVec2(p))
+  return Array.isArray(v) && isValidPolygon(v)
 }
 
-/**
- * Validate a parsed map file and return a typed `MapFile`.
- * Throws `MapFormatError` if validation fails.
- */
 export function validateMapFile(data: unknown): MapFile {
   assert(typeof data === "object" && data !== null, "map file must be a JSON object")
   const obj = data as Record<string, unknown>
 
-  // version
   assert(obj.version === MAP_FORMAT_VERSION, `unsupported version: ${obj.version}`)
 
-  // meta
   assert(typeof obj.meta === "object" && obj.meta !== null, "meta must be an object")
   assert(typeof (obj.meta as Record<string, unknown>).name === "string", "meta.name must be a string")
 
-  // bounds
   assert(typeof obj.bounds === "object" && obj.bounds !== null, "bounds must be an object")
   const b = obj.bounds as Record<string, unknown>
   assert(typeof b.x === "number" && typeof b.y === "number" && typeof b.w === "number" && typeof b.h === "number",
     "bounds must have numeric x, y, w, h")
 
-  // surfaces
   assert(Array.isArray(obj.surfaces), "surfaces must be an array")
   for (const [i, s] of obj.surfaces.entries()) {
     const surf = s as Record<string, unknown>
     assert(typeof surf.id === "string", `surfaces[${i}].id must be a string`)
-    assert(isPolygon(surf.polygon), `surfaces[${i}].polygon must be a non-empty array of Vec2`)
+    assert(isPolygon(surf.polygon), `surfaces[${i}].polygon must be a valid polygon`)
     assert(typeof surf.material === "string", `surfaces[${i}].material must be a string`)
   }
 
-  // walls
   assert(Array.isArray(obj.walls), "walls must be an array")
+  const polygonWallIds = new Set<string>()
   for (const [i, w] of obj.walls.entries()) {
     const wall = w as Record<string, unknown>
     assert(typeof wall.id === "string", `walls[${i}].id must be a string`)
-    assert(isVec2(wall.from), `walls[${i}].from must be a Vec2`)
-    assert(isVec2(wall.to), `walls[${i}].to must be a Vec2`)
-    // from and to should not be identical
-    const f = wall.from as Vec2
-    const t = wall.to as Vec2
-    assert(f.x !== t.x || f.y !== t.y, `walls[${i}].from and .to must not be identical`)
-    if (wall.width !== undefined) assert(typeof wall.width === "number" && wall.width > 0, `walls[${i}].width must be a positive number`)
+    assert(wall.kind === "wall" || wall.kind === "polygonWall", `walls[${i}].kind must be wall or polygonWall`)
+
+    if (wall.kind === "wall") {
+      assert(isVec2(wall.a), `walls[${i}].a must be a Vec2`)
+      assert(isVec2(wall.b), `walls[${i}].b must be a Vec2`)
+      assert(typeof wall.thickness === "number" && wall.thickness > 0, `walls[${i}].thickness must be a positive number`)
+      assert(typeof wall.polygonWallId === "string", `walls[${i}].polygonWallId must be a string`)
+    } else {
+      assert(isPolygon(wall.vertices), `walls[${i}].vertices must be a valid polygon`)
+      polygonWallIds.add(wall.id)
+    }
   }
 
-  // doors
-  assert(Array.isArray(obj.doors), "doors must be an array")
-  for (const [i, d] of obj.doors.entries()) {
-    const door = d as Record<string, unknown>
-    assert(typeof door.id === "string", `doors[${i}].id must be a string`)
-    assert(typeof door.wallId === "string", `doors[${i}].wallId must be a string`)
-    assert(typeof door.t === "number" && door.t >= 0 && door.t <= 1, `doors[${i}].t must be a number in [0, 1]`)
-    assert(typeof door.width === "number" && door.width > 0, `doors[${i}].width must be a positive number`)
+  for (const [i, w] of obj.walls.entries()) {
+    const wall = w as Record<string, unknown>
+    if (wall.kind === "wall") {
+      assert(polygonWallIds.has(wall.polygonWallId as string), `walls[${i}].polygonWallId must reference a polygonWall`)
+    }
   }
 
-  // objects
+  assert(Array.isArray(obj.openings), "openings must be an array")
+  for (const [i, d] of obj.openings.entries()) {
+    const opening = d as Record<string, unknown>
+    assert(typeof opening.id === "string", `openings[${i}].id must be a string`)
+    assert(opening.kind === "door" || opening.kind === "window", `openings[${i}].kind must be door or window`)
+    assert(isVec2(opening.position), `openings[${i}].position must be a Vec2`)
+    assert(typeof opening.rotation === "number", `openings[${i}].rotation must be a number`)
+    assert(typeof opening.width === "number" && opening.width > 0, `openings[${i}].width must be a positive number`)
+    assert(typeof opening.depth === "number" && opening.depth > 0, `openings[${i}].depth must be a positive number`)
+  }
+
   assert(Array.isArray(obj.objects), "objects must be an array")
   for (const [i, o] of obj.objects.entries()) {
     const object = o as Record<string, unknown>
@@ -168,43 +164,28 @@ export function validateMapFile(data: unknown): MapFile {
     assert(isVec2(object.position), `objects[${i}].position must be a Vec2`)
   }
 
-  // zones (optional)
   if (obj.zones !== undefined) {
     assert(Array.isArray(obj.zones), "zones must be an array")
     for (const [i, z] of obj.zones.entries()) {
       const zone = z as Record<string, unknown>
       assert(typeof zone.id === "string", `zones[${i}].id must be a string`)
       assert(typeof zone.kind === "string", `zones[${i}].kind must be a string`)
-      assert(isPolygon(zone.polygon), `zones[${i}].polygon must be a non-empty array of Vec2`)
+      assert(isPolygon(zone.polygon), `zones[${i}].polygon must be a valid polygon`)
     }
   }
 
   return obj as unknown as MapFile
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Save — editor state → MapFile JSON string
-// ────────────────────────────────────────────────────────────────────────────
-
 export type SaveMeta = {
   name: string
 }
 
-/**
- * Serialize the current editor document into the Delta Pavonis map format.
- *
- * @param doc    The editor's MapDocument (walls + openings + props)
- * @param meta   Map metadata (name, timestamps)
- * @param bounds The room bounds in world space
- * @returns      A pretty-printed JSON string conforming to the spec
- */
 export function saveMap(
   doc: MapDocument,
   meta: SaveMeta,
   bounds: Rect,
 ): string {
-  // ── Surfaces ──────────────────────────────────────────────────────────
-  // Generate a single floor surface from the room rectangle.
   const surfaces: Surface[] = [
     {
       id: "surface-floor",
@@ -216,32 +197,32 @@ export function saveMap(
     },
   ]
 
-  // ── Walls ─────────────────────────────────────────────────────────────
-  const walls: SpecWall[] = doc.walls.map(w => ({
-    id: w.id,
-    from: { x: w.start.x, y: w.start.y },
-    to: { x: w.end.x, y: w.end.y },
-    width: w.thickness,
+  const walls: SpecWall[] = [
+    ...doc.walls.map(w => ({
+      id: w.id,
+      kind: "wall" as const,
+      a: { x: w.a.x, y: w.a.y },
+      b: { x: w.b.x, y: w.b.y },
+      thickness: w.thickness,
+      polygonWallId: w.polygonWallId,
+    })),
+    ...doc.polygonWalls.map(w => ({
+      id: w.id,
+      kind: "polygonWall" as const,
+      vertices: w.vertices.map(vertex => ({ x: vertex.x, y: vertex.y })),
+      material: w.material,
+    })),
+  ]
+
+  const openings: SpecOpening[] = doc.openings.map(opening => ({
+    id: opening.id,
+    kind: opening.kind,
+    position: { x: opening.position.x, y: opening.position.y },
+    rotation: opening.rotation,
+    width: opening.width,
+    depth: opening.depth,
   }))
 
-  // ── Doors (and windows) ───────────────────────────────────────────────
-  const doors: SpecDoor[] = []
-  for (const wall of doc.walls) {
-    const length = wallLength(wall)
-    if (length <= 0) continue
-
-    for (const opening of wall.openings) {
-      doors.push({
-        id: opening.id,
-        wallId: wall.id,
-        t: opening.offset / length,
-        width: opening.width,
-        kind: opening.kind,
-      })
-    }
-  }
-
-  // ── Objects ───────────────────────────────────────────────────────────
   const objects: SpecObject[] = doc.props.map(p => ({
     id: p.id,
     kind: p.assetId,
@@ -249,7 +230,6 @@ export function saveMap(
     rotation: p.rotation,
   }))
 
-  // ── Map file ──────────────────────────────────────────────────────────
   const now = new Date().toISOString()
   const mapFile: MapFile = {
     version: MAP_FORMAT_VERSION,
@@ -261,16 +241,12 @@ export function saveMap(
     bounds,
     surfaces,
     walls,
-    doors,
+    openings,
     objects,
   }
 
   return JSON.stringify(mapFile, null, 2)
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Load — MapFile JSON string → editor state
-// ────────────────────────────────────────────────────────────────────────────
 
 export type LoadResult = {
   document: MapDocument
@@ -281,70 +257,56 @@ export type LoadResult = {
   meta: MapMetadata
 }
 
-/**
- * Deserialize a Delta Pavonis map file into editor-compatible state.
- *
- * @param json  The raw JSON string to parse
- * @returns     A LoadResult that can be applied to the Zustand store
- * @throws      MapFormatError on invalid/malformed input
- */
 export function loadMap(json: string): LoadResult {
   let parsed: unknown
   try {
     parsed = JSON.parse(json)
   } catch {
-    throw new MapFormatError("invalid JSON — could not parse")
+    throw new MapFormatError("invalid JSON - could not parse")
   }
 
   const mapFile = validateMapFile(parsed)
 
-  // ── Resolve wall references ───────────────────────────────────────────
-  const wallById = new Map<string, Wall>()
-
   const walls: Wall[] = []
-  let wallIdx = 0
+  const polygonWalls: PolygonWall[] = []
+
   for (const sw of mapFile.walls) {
-    wallIdx++
-    const wall: Wall = {
-      id: sw.id,
-      kind: "wall",
-      start: { x: sw.from.x, y: sw.from.y },
-      end: { x: sw.to.x, y: sw.to.y },
-      thickness: sw.width ?? 8,
-      openings: [],
-    }
-    walls.push(wall)
-    wallById.set(sw.id, wall)
-  }
-
-  // ── Attach doors/openings to their walls ─────────────────────────────
-  let doorCount = 0
-  let windowCount = 0
-  for (const sd of mapFile.doors) {
-    const targetWall = wallById.get(sd.wallId)
-    if (!targetWall) continue // orphan door — skip silently
-
-    const length = wallLength(targetWall)
-    if (length <= 0) continue
-
-    const offset = sd.t * length
-    const kind = sd.kind === "window" ? "window" : "door"
-
-    targetWall.openings.push({
-      id: sd.id,
-      kind,
-      offset,
-      width: sd.width,
-    })
-
-    if (kind === "door") {
-      doorCount++
+    if (sw.kind === "wall") {
+      walls.push({
+        id: sw.id,
+        kind: "wall",
+        a: { x: sw.a.x, y: sw.a.y },
+        b: { x: sw.b.x, y: sw.b.y },
+        thickness: sw.thickness,
+        polygonWallId: sw.polygonWallId,
+      })
     } else {
-      windowCount++
+      polygonWalls.push({
+        id: sw.id,
+        kind: "polygonWall",
+        vertices: sw.vertices.map(vertex => ({ x: vertex.x, y: vertex.y })),
+        material: sw.material,
+      })
     }
   }
 
-  // ── Build names ──────────────────────────────────────────────────────
+  const polygonById = new Map(polygonWalls.map(polygonWall => [polygonWall.id, polygonWall]))
+  for (const wall of walls) {
+    const polygonWall = polygonById.get(wall.polygonWallId)
+    if (polygonWall) {
+      polygonWall.vertices = createWallPolygon(wall)
+    }
+  }
+
+  const openings: Opening[] = mapFile.openings.map(opening => ({
+    id: opening.id,
+    kind: opening.kind,
+    position: { x: opening.position.x, y: opening.position.y },
+    rotation: opening.rotation,
+    width: opening.width,
+    depth: opening.depth,
+  }))
+
   const names: Record<string, string> = {}
   let wallN = 0
   for (const w of walls) {
@@ -352,21 +314,24 @@ export function loadMap(json: string): LoadResult {
     names[w.id] = `Wall_${String(wallN).padStart(3, "0")}`
   }
 
+  let polygonWallN = 0
+  for (const w of polygonWalls) {
+    polygonWallN++
+    names[w.id] = `PolygonWall_${String(polygonWallN).padStart(3, "0")}`
+  }
+
   let doorN = 0
   let windowN = 0
-  for (const w of walls) {
-    for (const o of w.openings) {
-      if (o.kind === "door") {
-        doorN++
-        names[o.id] = `Door_${String(doorN).padStart(3, "0")}`
-      } else {
-        windowN++
-        names[o.id] = `Window_${String(windowN).padStart(3, "0")}`
-      }
+  for (const opening of openings) {
+    if (opening.kind === "door") {
+      doorN++
+      names[opening.id] = `Door_${String(doorN).padStart(3, "0")}`
+    } else {
+      windowN++
+      names[opening.id] = `Window_${String(windowN).padStart(3, "0")}`
     }
   }
 
-  // ── Objects → Props ──────────────────────────────────────────────────
   let propCount = 0
   const props: Prop[] = mapFile.objects.map(obj => {
     propCount++
@@ -385,12 +350,15 @@ export function loadMap(json: string): LoadResult {
   return {
     document: {
       walls,
+      polygonWalls,
+      openings,
       props,
       referenceImages: [],
     },
     names,
     counters: {
       wall: wallN,
+      polygonWall: polygonWallN,
       door: doorN,
       window: windowN,
       prop: propCount,
@@ -401,10 +369,6 @@ export function loadMap(json: string): LoadResult {
     meta: mapFile.meta,
   }
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ────────────────────────────────────────────────────────────────────────────
 
 function rectToPolygon(r: Rect): Vec2[] {
   return [

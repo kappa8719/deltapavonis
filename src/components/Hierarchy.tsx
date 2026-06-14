@@ -17,11 +17,12 @@ import { cn } from "../lib/utils"
 type Item = {
   id: string
   name: string
-  type: "wall" | "door" | "window" | "prop" | "referenceImage"
+  type: "wall" | "polygonWall" | "door" | "window" | "prop" | "referenceImage"
 }
 
 const ICONS = {
   wall: Square,
+  polygonWall: Square,
   door: DoorOpen,
   window: AppWindow,
   prop: Box,
@@ -42,13 +43,18 @@ export function Hierarchy() {
       name: getObjectName(wall.id),
       type: "wall" as const,
     })),
-    ...document.walls.flatMap(wall =>
-      wall.openings.map(opening => ({
-        id: opening.id,
-        name: getObjectName(opening.id),
-        type: opening.kind,
-      }))
-    ),
+    ...document.polygonWalls
+      .filter(polygonWall => !document.walls.some(wall => wall.polygonWallId === polygonWall.id))
+      .map(polygonWall => ({
+        id: polygonWall.id,
+        name: getObjectName(polygonWall.id),
+        type: "polygonWall" as const,
+      })),
+    ...document.openings.map(opening => ({
+      id: opening.id,
+      name: getObjectName(opening.id),
+      type: opening.kind,
+    })),
     ...document.props.map(prop => ({
       id: prop.id,
       name: getObjectName(prop.id),

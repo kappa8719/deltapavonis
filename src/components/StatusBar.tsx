@@ -14,6 +14,7 @@ export function StatusBar() {
 
   const total =
     doc.walls.length +
+    doc.polygonWalls.length +
     getOpeningCount(doc) +
     doc.props.length +
     doc.referenceImages.length

@@ -1,25 +1,38 @@
 import { create } from "zustand"
 import { v4 as uuid } from "uuid"
 import {
+  createWallPolygon,
   DEFAULT_DOOR_WIDTH,
   DEFAULT_WALL_THICKNESS,
+  isValidPolygon,
+  translatePolygon,
 } from "./lib/map-geometry"
 import {
   getObject,
-  getWallByOpeningId,
   getOpeningCount,
+  isLinkedPolygonWall,
 } from "./types"
 import type {
   ActiveTool,
   MapDocument,
   ObjectPatch,
+  Opening,
   Prop,
   ReferenceImage,
   Wall,
-  WallOpening,
   WallOpeningKind,
 } from "./types"
 import type { LoadResult } from "./lib/map-format"
+
+function createEditorWall(
+  id: string,
+  polygonWallId: string,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  thickness: number
+): Wall {
+  return { id, kind: "wall", a, b, thickness, polygonWallId }
+}
 
 function createDefaultRoom({ size, wallThickness }: { size: number; wallThickness: number }) {
   const half = size / 2
@@ -30,49 +43,37 @@ function createDefaultRoom({ size, wallThickness }: { size: number; wallThicknes
     bottom: uuid(),
     left: uuid(),
   }
+  const polygonIds = {
+    top: uuid(),
+    right: uuid(),
+    bottom: uuid(),
+    left: uuid(),
+  }
   const doorId = uuid()
   const propId = uuid()
 
+  const walls = [
+    createEditorWall(wallIds.top, polygonIds.top, { x: -half, y: -half }, { x: half, y: -half }, wallThickness),
+    createEditorWall(wallIds.right, polygonIds.right, { x: half, y: -half }, { x: half, y: half }, wallThickness),
+    createEditorWall(wallIds.bottom, polygonIds.bottom, { x: -half, y: half }, { x: half, y: half }, wallThickness),
+    createEditorWall(wallIds.left, polygonIds.left, { x: -half, y: half }, { x: -half, y: -half }, wallThickness),
+  ]
+
   const document: MapDocument = {
-    walls: [
+    walls,
+    polygonWalls: walls.map(wall => ({
+      id: wall.polygonWallId,
+      kind: "polygonWall",
+      vertices: createWallPolygon(wall),
+    })),
+    openings: [
       {
-        id: wallIds.top,
-        kind: "wall",
-        start: { x: -half, y: -half },
-        end: { x: half, y: -half },
-        thickness: wallThickness,
-        openings: [],
-      },
-      {
-        id: wallIds.right,
-        kind: "wall",
-        start: { x: half, y: -half },
-        end: { x: half, y: half },
-        thickness: wallThickness,
-        openings: [],
-      },
-      {
-        id: wallIds.bottom,
-        kind: "wall",
-        start: { x: -half, y: half },
-        end: { x: half, y: half },
-        thickness: wallThickness,
-        openings: [
-          {
-            id: doorId,
-            kind: "door",
-            offset: size / 2,
-            width: DEFAULT_DOOR_WIDTH,
-          },
-        ],
-      },
-      {
-        id: wallIds.left,
-        kind: "wall",
-        start: { x: -half, y: half },
-        end: { x: -half, y: -half },
-        thickness: wallThickness,
-        openings: [],
+        id: doorId,
+        kind: "door",
+        position: { x: 0, y: half },
+        rotation: 0,
+        width: DEFAULT_DOOR_WIDTH,
+        depth: wallThickness,
       },
     ],
     props: [
@@ -86,6 +87,10 @@ function createDefaultRoom({ size, wallThickness }: { size: number; wallThicknes
     [wallIds.right]: "Wall_002",
     [wallIds.bottom]: "Wall_003",
     [wallIds.left]: "Wall_004",
+    [polygonIds.top]: "PolygonWall_001",
+    [polygonIds.right]: "PolygonWall_002",
+    [polygonIds.bottom]: "PolygonWall_003",
+    [polygonIds.left]: "PolygonWall_004",
     [doorId]: "Door_001",
     [propId]: "Prop_001",
   }
@@ -93,7 +98,7 @@ function createDefaultRoom({ size, wallThickness }: { size: number; wallThicknes
   return {
     document,
     names,
-    counters: { wall: 4, door: 1, window: 0, prop: 1, referenceImage: 0 },
+    counters: { wall: 4, polygonWall: 4, door: 1, window: 0, prop: 1, referenceImage: 0 },
     roomWidth: size,
     roomHeight: size,
   }
@@ -104,7 +109,7 @@ const initialState = createDefaultRoom({
   wallThickness: DEFAULT_WALL_THICKNESS,
 })
 
-type OpeningDraft = Omit<WallOpening, "id" | "kind">
+type OpeningDraft = Omit<Opening, "id" | "kind">
 
 type EditorStore = {
   document: MapDocument
@@ -133,11 +138,13 @@ type EditorStore = {
   setSnapSize: (size: number) => void
   setGridVisible: (visible: boolean) => void
 
-  addWall: (wall: Omit<Wall, "id" | "kind">) => string
-  addDoor: (wallId: string, door: OpeningDraft) => string | null
-  addWindow: (wallId: string, win: OpeningDraft) => string | null
+  addWall: (wall: Omit<Wall, "id" | "kind" | "polygonWallId">) => string
+  addOpening: (kind: WallOpeningKind, opening: OpeningDraft) => string
+  addDoor: (opening: OpeningDraft) => string
+  addWindow: (opening: OpeningDraft) => string
   addProp: (prop: Omit<Prop, "id" | "kind">) => string
   addReferenceImage: (img: Omit<ReferenceImage, "id" | "kind">) => string
+  convertWallToPolygon: (wallId: string) => string | null
 
   updateObject: (id: string, patch: ObjectPatch) => void
   deleteSelected: () => void
@@ -189,64 +196,49 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   addWall: wall => {
     const id = uuid()
-    const counter = (get().counters.wall || 0) + 1
-    const name = `Wall_${String(counter).padStart(3, "0")}`
+    const polygonWallId = uuid()
+    const wallCounter = (get().counters.wall || 0) + 1
+    const polygonCounter = (get().counters.polygonWall || 0) + 1
+    const editorWall: Wall = { id, kind: "wall", polygonWallId, ...wall }
+    const polygonWall = {
+      id: polygonWallId,
+      kind: "polygonWall" as const,
+      vertices: createWallPolygon(editorWall),
+    }
+
     set(state => ({
       document: {
         ...state.document,
-        walls: [...state.document.walls, { id, kind: "wall", ...wall }],
+        walls: [...state.document.walls, editorWall],
+        polygonWalls: [...state.document.polygonWalls, polygonWall],
       },
-      names: { ...state.names, [id]: name },
-      counters: { ...state.counters, wall: counter },
+      names: {
+        ...state.names,
+        [id]: `Wall_${String(wallCounter).padStart(3, "0")}`,
+        [polygonWallId]: `PolygonWall_${String(polygonCounter).padStart(3, "0")}`,
+      },
+      counters: { ...state.counters, wall: wallCounter, polygonWall: polygonCounter },
     }))
     return id
   },
-  addDoor: (wallId, door) => {
-    const wall = get().document.walls.find(candidate => candidate.id === wallId)
-    if (!wall) return null
-
+  addOpening: (kind, opening) => {
     const id = uuid()
-    const counter = (get().counters.door || 0) + 1
-    const name = createOpeningName("door", counter)
+    const counter = (get().counters[kind] || 0) + 1
+    const name = createOpeningName(kind, counter)
 
     set(state => ({
       document: {
         ...state.document,
-        walls: state.document.walls.map(candidate =>
-          candidate.id === wallId
-            ? { ...candidate, openings: [...candidate.openings, { id, kind: "door", ...door }] }
-            : candidate
-        ),
+        openings: [...state.document.openings, { id, kind, ...opening }],
       },
       names: { ...state.names, [id]: name },
-      counters: { ...state.counters, door: counter },
+      counters: { ...state.counters, [kind]: counter },
     }))
 
     return id
   },
-  addWindow: (wallId, win) => {
-    const wall = get().document.walls.find(candidate => candidate.id === wallId)
-    if (!wall) return null
-
-    const id = uuid()
-    const counter = (get().counters.window || 0) + 1
-    const name = createOpeningName("window", counter)
-
-    set(state => ({
-      document: {
-        ...state.document,
-        walls: state.document.walls.map(candidate =>
-          candidate.id === wallId
-            ? { ...candidate, openings: [...candidate.openings, { id, kind: "window", ...win }] }
-            : candidate
-        ),
-      },
-      names: { ...state.names, [id]: name },
-      counters: { ...state.counters, window: counter },
-    }))
-
-    return id
-  },
+  addDoor: opening => get().addOpening("door", opening),
+  addWindow: opening => get().addOpening("window", opening),
   addProp: prop => {
     const id = uuid()
     const counter = (get().counters.prop || 0) + 1
@@ -278,46 +270,72 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }))
     return id
   },
+  convertWallToPolygon: wallId => {
+    const wall = get().document.walls.find(candidate => candidate.id === wallId)
+    if (!wall) return null
+
+    set(state => ({
+      document: {
+        ...state.document,
+        walls: state.document.walls.filter(candidate => candidate.id !== wallId),
+      },
+      selection: [wall.polygonWallId],
+      names: Object.fromEntries(Object.entries(state.names).filter(([id]) => id !== wallId)),
+    }))
+
+    return wall.polygonWallId
+  },
 
   updateObject: (id, patch) => {
     set(state => {
       const wall = state.document.walls.find(candidate => candidate.id === id)
       if (wall) {
+        const nextWall = {
+          ...wall,
+          a: patch.a ?? wall.a,
+          b: patch.b ?? wall.b,
+          thickness: patch.thickness ?? wall.thickness,
+        }
         return {
           document: {
             ...state.document,
-            walls: state.document.walls.map(candidate =>
-              candidate.id === id
-                ? {
-                  ...candidate,
-                  start: patch.start ?? candidate.start,
-                  end: patch.end ?? candidate.end,
-                  thickness: patch.thickness ?? candidate.thickness,
-                }
+            walls: state.document.walls.map(candidate => candidate.id === id ? nextWall : candidate),
+            polygonWalls: state.document.polygonWalls.map(candidate =>
+              candidate.id === wall.polygonWallId
+                ? { ...candidate, vertices: createWallPolygon(nextWall) }
                 : candidate
             ),
           },
         }
       }
 
-      const openingWall = getWallByOpeningId(state.document, id)
-      if (openingWall) {
+      if (state.document.polygonWalls.some(candidate => candidate.id === id)) {
+        if (isLinkedPolygonWall(state.document, id)) return {}
+        const nextVertices = patch.vertices
         return {
           document: {
             ...state.document,
-            walls: state.document.walls.map(candidate =>
-              candidate.id === openingWall.id
+            polygonWalls: state.document.polygonWalls.map(candidate =>
+              candidate.id === id && nextVertices && isValidPolygon(nextVertices)
+                ? { ...candidate, vertices: nextVertices }
+                : candidate
+            ),
+          },
+        }
+      }
+
+      if (state.document.openings.some(candidate => candidate.id === id)) {
+        return {
+          document: {
+            ...state.document,
+            openings: state.document.openings.map(candidate =>
+              candidate.id === id
                 ? {
                   ...candidate,
-                  openings: candidate.openings.map(opening =>
-                    opening.id === id
-                      ? {
-                        ...opening,
-                        offset: patch.offset ?? opening.offset,
-                        width: patch.width ?? opening.width,
-                      }
-                      : opening
-                  ),
+                  position: patch.position ?? candidate.position,
+                  width: patch.width ?? candidate.width,
+                  depth: patch.depth ?? candidate.depth,
+                  rotation: patch.rotation ?? candidate.rotation,
                 }
                 : candidate
             ),
@@ -375,20 +393,29 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     set(state => {
       const deletedIds = new Set<string>()
-      const walls = state.document.walls.flatMap(wall => {
-        if (selectedIds.has(wall.id)) {
+      const linkedPolygonIds = new Set<string>()
+
+      const walls = state.document.walls.filter(wall => {
+        const shouldDelete = selectedIds.has(wall.id)
+        if (shouldDelete) {
           deletedIds.add(wall.id)
-          wall.openings.forEach(opening => deletedIds.add(opening.id))
-          return []
+          deletedIds.add(wall.polygonWallId)
+          linkedPolygonIds.add(wall.polygonWallId)
         }
+        return !shouldDelete
+      })
 
-        const openings = wall.openings.filter(opening => {
-          const shouldDelete = selectedIds.has(opening.id)
-          if (shouldDelete) deletedIds.add(opening.id)
-          return !shouldDelete
-        })
+      const polygonWalls = state.document.polygonWalls.filter(polygonWall => {
+        const shouldDelete = linkedPolygonIds.has(polygonWall.id) ||
+          (selectedIds.has(polygonWall.id) && !isLinkedPolygonWall(state.document, polygonWall.id))
+        if (shouldDelete) deletedIds.add(polygonWall.id)
+        return !shouldDelete
+      })
 
-        return [{ ...wall, openings }]
+      const openings = state.document.openings.filter(opening => {
+        const shouldDelete = selectedIds.has(opening.id)
+        if (shouldDelete) deletedIds.add(opening.id)
+        return !shouldDelete
       })
 
       const props = state.document.props.filter(prop => {
@@ -409,7 +436,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
       return {
         selection: [],
-        document: { walls, props, referenceImages },
+        document: { walls, polygonWalls, openings, props, referenceImages },
         names,
       }
     })
@@ -418,7 +445,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   getObjectName: id => get().names[id] || id.slice(0, 8),
   getObjectCount: () => {
     const document = get().document
-    return document.walls.length + getOpeningCount(document) + document.props.length + document.referenceImages.length
+    return document.walls.length + document.polygonWalls.length + getOpeningCount(document) + document.props.length + document.referenceImages.length
   },
 
   importMap: result => {
@@ -435,6 +462,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     })
   },
 }))
+
+export function translatePolygonObject(id: string, dx: number, dy: number) {
+  const { document, updateObject } = useEditorStore.getState()
+  const polygon = document.polygonWalls.find(candidate => candidate.id === id)
+  if (!polygon || isLinkedPolygonWall(document, id)) return
+  updateObject(id, { vertices: translatePolygon(polygon.vertices, dx, dy) })
+}
 
 export function getSelectedObject() {
   const { document, selection } = useEditorStore.getState()

@@ -5,28 +5,37 @@ export type Vec2 = {
 
 export type WallOpeningKind = "door" | "window"
 
-export type WallOpening = {
-  id: string
-  kind: WallOpeningKind
-  offset: number
-  width: number
-}
-
-export type Door = WallOpening & {
-  kind: "door"
-}
-
-export type Window = WallOpening & {
-  kind: "window"
-}
-
 export type Wall = {
   id: string
   kind: "wall"
-  start: Vec2
-  end: Vec2
+  a: Vec2
+  b: Vec2
   thickness: number
-  openings: WallOpening[]
+  polygonWallId: string
+}
+
+export type PolygonWall = {
+  id: string
+  kind: "polygonWall"
+  vertices: Vec2[]
+  material?: string
+}
+
+export type Opening = {
+  id: string
+  kind: WallOpeningKind
+  position: Vec2
+  rotation: number
+  width: number
+  depth: number
+}
+
+export type Door = Opening & {
+  kind: "door"
+}
+
+export type Window = Opening & {
+  kind: "window"
 }
 
 export type Prop = {
@@ -54,27 +63,27 @@ export type ReferenceImage = {
 
 export type MapDocument = {
   walls: Wall[]
+  polygonWalls: PolygonWall[]
+  openings: Opening[]
   props: Prop[]
   referenceImages: ReferenceImage[]
 }
 
 export type ActiveTool = "select" | "wall" | "door" | "window" | "prop"
 
-export type WallOpeningObject = (Door | Window) & {
-  wallId: string
-}
+export type MapObject = Wall | PolygonWall | Opening | Prop | ReferenceImage
 
-export type MapObject = Wall | WallOpeningObject | Prop | ReferenceImage
-
-export type ObjectType = "wall" | "door" | "window" | "prop" | "referenceImage"
+export type ObjectType = "wall" | "polygonWall" | "door" | "window" | "prop" | "referenceImage"
 
 export type ObjectPatch = Partial<{
-  start: Vec2
-  end: Vec2
+  a: Vec2
+  b: Vec2
   thickness: number
-  offset: number
+  vertices: Vec2[]
+  position: Vec2
   width: number
   height: number
+  depth: number
   x: number
   y: number
   assetId: string
@@ -97,10 +106,11 @@ export function getObject(doc: MapDocument, id: string): MapObject | null {
   const wall = doc.walls.find(candidate => candidate.id === id)
   if (wall) return wall
 
-  for (const candidateWall of doc.walls) {
-    const opening = candidateWall.openings.find(candidate => candidate.id === id)
-    if (opening) return { ...opening, wallId: candidateWall.id } as WallOpeningObject
-  }
+  const polygonWall = doc.polygonWalls.find(candidate => candidate.id === id)
+  if (polygonWall) return polygonWall
+
+  const opening = doc.openings.find(candidate => candidate.id === id)
+  if (opening) return opening
 
   const prop = doc.props.find(candidate => candidate.id === id)
   if (prop) return prop
@@ -108,17 +118,14 @@ export function getObject(doc: MapDocument, id: string): MapObject | null {
   return doc.referenceImages.find(candidate => candidate.id === id) || null
 }
 
-export function getWallByOpeningId(doc: MapDocument, openingId: string): Wall | null {
-  return doc.walls.find(wall => wall.openings.some(opening => opening.id === openingId)) || null
+export function getLinkedPolygonWall(doc: MapDocument, wall: Wall): PolygonWall | null {
+  return doc.polygonWalls.find(candidate => candidate.id === wall.polygonWallId) || null
 }
 
-export function getOpeningById(doc: MapDocument, openingId: string): WallOpeningObject | null {
-  const wall = getWallByOpeningId(doc, openingId)
-  if (!wall) return null
-  const opening = wall.openings.find(candidate => candidate.id === openingId)
-  return opening ? { ...opening, wallId: wall.id } as WallOpeningObject : null
+export function isLinkedPolygonWall(doc: MapDocument, polygonWallId: string): boolean {
+  return doc.walls.some(wall => wall.polygonWallId === polygonWallId)
 }
 
 export function getOpeningCount(doc: MapDocument) {
-  return doc.walls.reduce((count, wall) => count + wall.openings.length, 0)
+  return doc.openings.length
 }

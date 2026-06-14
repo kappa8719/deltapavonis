@@ -1,14 +1,14 @@
 import { useEditorStore } from "../store"
 import { cn } from "../lib/utils"
 import {
-  canPlaceOpeningOnWall,
+  polygonCentroid,
   wallLength,
 } from "../lib/map-geometry"
 import {
   getObject,
-  getWallByOpeningId,
+  isLinkedPolygonWall,
 } from "../types"
-import type { MapDocument, ObjectPatch, Prop, ReferenceImage, Wall, WallOpeningObject } from "../types"
+import type { ObjectPatch, Opening, PolygonWall, Prop, ReferenceImage, Wall } from "../types"
 
 function FieldRow({
   label,
@@ -60,97 +60,41 @@ function SectionHeader({ title }: { title: string }) {
   )
 }
 
-function updateWall(
-  wall: Wall,
-  patch: ObjectPatch,
-  updateObject: (id: string, patch: ObjectPatch) => void
-) {
-  updateObject(wall.id, {
-    start: patch.start ?? wall.start,
-    end: patch.end ?? wall.end,
-    thickness: patch.thickness ?? wall.thickness,
-  })
-}
-
-function OpeningInspector({
-  document,
-  opening,
-  getObjectName,
-  updateObject,
-}: {
-  document: MapDocument
-  opening: WallOpeningObject
-  getObjectName: (id: string) => string
-  updateObject: (id: string, patch: ObjectPatch) => void
-}) {
-  const wall = getWallByOpeningId(document, opening.id)
-  if (!wall) return null
-
-  const updateOpening = (patch: Partial<Pick<WallOpeningObject, "offset" | "width">>) => {
-    const nextWidth = patch.width ?? opening.width
-    const nextOffset = patch.offset ?? opening.offset
-    if (!canPlaceOpeningOnWall(wall, { offset: nextOffset, width: nextWidth }, opening.id)) {
-      return
-    }
-    updateObject(opening.id, { offset: nextOffset, width: nextWidth })
-  }
-
-  return (
-    <>
-      <SectionHeader title="Opening" />
-      <div className="px-4 pb-2">
-        <InfoRow label="Type" value={opening.kind === "door" ? "Door" : "Window"} />
-        <InfoRow label="Attached" value={getObjectName(wall.id)} />
-        <FieldRow
-          label="Offset"
-          value={opening.offset}
-          onChange={value => updateOpening({ offset: value })}
-          unit="u"
-        />
-        <FieldRow
-          label="Width"
-          value={opening.width}
-          onChange={value => updateOpening({ width: Math.max(1, value) })}
-          unit="u"
-        />
-      </div>
-    </>
-  )
-}
-
 function WallInspector({
   wall,
   updateObject,
+  convertWallToPolygon,
 }: {
   wall: Wall
   updateObject: (id: string, patch: ObjectPatch) => void
+  convertWallToPolygon: (wallId: string) => string | null
 }) {
   return (
     <>
-      <SectionHeader title="Wall" />
+      <SectionHeader title="Editor Wall" />
       <div className="px-4 pb-2">
         <FieldRow
-          label="Start X"
-          value={wall.start.x}
-          onChange={value => updateWall(wall, { start: { ...wall.start, x: value } }, updateObject)}
+          label="A X"
+          value={wall.a.x}
+          onChange={value => updateObject(wall.id, { a: { ...wall.a, x: value } })}
           unit="u"
         />
         <FieldRow
-          label="Start Y"
-          value={wall.start.y}
-          onChange={value => updateWall(wall, { start: { ...wall.start, y: value } }, updateObject)}
+          label="A Y"
+          value={wall.a.y}
+          onChange={value => updateObject(wall.id, { a: { ...wall.a, y: value } })}
           unit="u"
         />
         <FieldRow
-          label="End X"
-          value={wall.end.x}
-          onChange={value => updateWall(wall, { end: { ...wall.end, x: value } }, updateObject)}
+          label="B X"
+          value={wall.b.x}
+          onChange={value => updateObject(wall.id, { b: { ...wall.b, x: value } })}
           unit="u"
         />
         <FieldRow
-          label="End Y"
-          value={wall.end.y}
-          onChange={value => updateWall(wall, { end: { ...wall.end, y: value } }, updateObject)}
+          label="B Y"
+          value={wall.b.y}
+          onChange={value => updateObject(wall.id, { b: { ...wall.b, y: value } })}
           unit="u"
         />
         <FieldRow label="Length" value={Math.round(wallLength(wall) * 100) / 100} unit="u" readOnly />
@@ -158,6 +102,109 @@ function WallInspector({
           label="Thickness"
           value={wall.thickness}
           onChange={value => updateObject(wall.id, { thickness: Math.max(1, value) })}
+          unit="u"
+        />
+        <InfoRow label="Polygon" value={wall.polygonWallId.slice(0, 8)} />
+        <button
+          onClick={() => convertWallToPolygon(wall.id)}
+          className="mt-3 w-full py-2 text-sm bg-muted hover:bg-muted/70 text-text rounded-md border border-border transition-colors"
+        >
+          Convert to polygon
+        </button>
+      </div>
+    </>
+  )
+}
+
+function PolygonWallInspector({
+  polygonWall,
+  updateObject,
+  readOnly,
+}: {
+  polygonWall: PolygonWall
+  updateObject: (id: string, patch: ObjectPatch) => void
+  readOnly: boolean
+}) {
+  const centroid = polygonCentroid(polygonWall.vertices)
+  const updateVertex = (index: number, patch: Partial<{ x: number; y: number }>) => {
+    const vertices = polygonWall.vertices.map((vertex, candidateIndex) =>
+      candidateIndex === index ? { ...vertex, ...patch } : vertex
+    )
+    updateObject(polygonWall.id, { vertices })
+  }
+
+  return (
+    <>
+      <SectionHeader title="Polygon Wall" />
+      <div className="px-4 pb-2">
+        {readOnly && <InfoRow label="Linked" value="Editor wall controls this polygon" />}
+        <FieldRow label="Vertices" value={polygonWall.vertices.length} readOnly />
+        <FieldRow label="Center X" value={Math.round(centroid.x * 100) / 100} unit="u" readOnly />
+        <FieldRow label="Center Y" value={Math.round(centroid.y * 100) / 100} unit="u" readOnly />
+        {!readOnly && polygonWall.vertices.map((vertex, index) => (
+          <div key={index} className="pt-2">
+            <div className="text-xs text-text-dim pb-1">Vertex {index + 1}</div>
+            <FieldRow
+              label="X"
+              value={vertex.x}
+              onChange={value => updateVertex(index, { x: value })}
+              unit="u"
+              width="w-10"
+            />
+            <FieldRow
+              label="Y"
+              value={vertex.y}
+              onChange={value => updateVertex(index, { y: value })}
+              unit="u"
+              width="w-10"
+            />
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
+function OpeningInspector({
+  opening,
+  updateObject,
+}: {
+  opening: Opening
+  updateObject: (id: string, patch: ObjectPatch) => void
+}) {
+  return (
+    <>
+      <SectionHeader title="Opening" />
+      <div className="px-4 pb-2">
+        <InfoRow label="Type" value={opening.kind === "door" ? "Door" : "Window"} />
+        <FieldRow
+          label="X"
+          value={opening.position.x}
+          onChange={value => updateObject(opening.id, { position: { ...opening.position, x: value } })}
+          unit="u"
+        />
+        <FieldRow
+          label="Y"
+          value={opening.position.y}
+          onChange={value => updateObject(opening.id, { position: { ...opening.position, y: value } })}
+          unit="u"
+        />
+        <FieldRow
+          label="Rotation"
+          value={opening.rotation}
+          onChange={value => updateObject(opening.id, { rotation: value })}
+          unit="deg"
+        />
+        <FieldRow
+          label="Width"
+          value={opening.width}
+          onChange={value => updateObject(opening.id, { width: Math.max(1, value) })}
+          unit="u"
+        />
+        <FieldRow
+          label="Depth"
+          value={opening.depth}
+          onChange={value => updateObject(opening.id, { depth: Math.max(1, value) })}
           unit="u"
         />
       </div>
@@ -213,7 +260,7 @@ function ReferenceImageInspector({
           label="Rotation"
           value={image.rotation}
           onChange={value => updateObject(image.id, { rotation: value })}
-          unit="°"
+          unit="deg"
         />
         <FieldRow
           label="Opacity"
@@ -231,6 +278,7 @@ export function Inspector() {
   const selection = useEditorStore(state => state.selection)
   const updateObject = useEditorStore(state => state.updateObject)
   const deleteSelected = useEditorStore(state => state.deleteSelected)
+  const convertWallToPolygon = useEditorStore(state => state.convertWallToPolygon)
   const getObjectName = useEditorStore(state => state.getObjectName)
 
   const id = selection[0]
@@ -252,16 +300,19 @@ export function Inspector() {
           </div>
 
           {object.kind === "wall" && (
-            <WallInspector wall={object} updateObject={updateObject} />
+            <WallInspector wall={object} updateObject={updateObject} convertWallToPolygon={convertWallToPolygon} />
+          )}
+
+          {object.kind === "polygonWall" && (
+            <PolygonWallInspector
+              polygonWall={object}
+              updateObject={updateObject}
+              readOnly={isLinkedPolygonWall(document, object.id)}
+            />
           )}
 
           {(object.kind === "door" || object.kind === "window") && (
-            <OpeningInspector
-              document={document}
-              opening={object}
-              getObjectName={getObjectName}
-              updateObject={updateObject}
-            />
+            <OpeningInspector opening={object} updateObject={updateObject} />
           )}
 
           {object.kind === "prop" && (
