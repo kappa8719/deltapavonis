@@ -141,6 +141,13 @@ function PolygonWallInspector({
         <FieldRow label="Vertices" value={polygonWall.vertices.length} readOnly />
         <FieldRow label="Center X" value={Math.round(centroid.x * 100) / 100} unit="u" readOnly />
         <FieldRow label="Center Y" value={Math.round(centroid.y * 100) / 100} unit="u" readOnly />
+        <FieldRow
+          label="Rotation"
+          value={polygonWall.rotation}
+          onChange={value => updateObject(polygonWall.id, { rotation: value })}
+          unit="deg"
+          readOnly={readOnly}
+        />
         {!readOnly && polygonWall.vertices.map((vertex, index) => (
           <div key={index} className="pt-2">
             <div className="text-xs text-text-dim pb-1">Vertex {index + 1}</div>

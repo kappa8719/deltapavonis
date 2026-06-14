@@ -2,7 +2,7 @@
  * Delta Pavonis Map Format — load/save for the editor.
  */
 
-import { createWallPolygon, isValidPolygon } from "./map-geometry"
+import { createUnrotatedWallPolygon, isValidPolygon, wallRotation } from "./map-geometry"
 import type { MapDocument, Opening, PolygonWall, Prop, Wall } from "../types"
 
 export const MAP_FORMAT_VERSION = 2 as const
@@ -50,6 +50,7 @@ export type SpecPolygonWall = {
   id: string
   kind: "polygonWall"
   vertices: Vec2[]
+  rotation?: number
   material?: string
 }
 
@@ -134,6 +135,7 @@ export function validateMapFile(data: unknown): MapFile {
       assert(typeof wall.polygonWallId === "string", `walls[${i}].polygonWallId must be a string`)
     } else {
       assert(isPolygon(wall.vertices), `walls[${i}].vertices must be a valid polygon`)
+      assert(wall.rotation === undefined || typeof wall.rotation === "number", `walls[${i}].rotation must be a number`)
       polygonWallIds.add(wall.id)
     }
   }
@@ -210,6 +212,7 @@ export function saveMap(
       id: w.id,
       kind: "polygonWall" as const,
       vertices: w.vertices.map(vertex => ({ x: vertex.x, y: vertex.y })),
+      rotation: w.rotation,
       material: w.material,
     })),
   ]
@@ -285,6 +288,7 @@ export function loadMap(json: string): LoadResult {
         id: sw.id,
         kind: "polygonWall",
         vertices: sw.vertices.map(vertex => ({ x: vertex.x, y: vertex.y })),
+        rotation: sw.rotation ?? 0,
         material: sw.material,
       })
     }
@@ -294,7 +298,8 @@ export function loadMap(json: string): LoadResult {
   for (const wall of walls) {
     const polygonWall = polygonById.get(wall.polygonWallId)
     if (polygonWall) {
-      polygonWall.vertices = createWallPolygon(wall)
+      polygonWall.vertices = createUnrotatedWallPolygon(wall)
+      polygonWall.rotation = wallRotation(wall)
     }
   }
 

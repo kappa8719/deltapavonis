@@ -1,11 +1,12 @@
 import { create } from "zustand"
 import { v4 as uuid } from "uuid"
 import {
-  createWallPolygon,
+  createUnrotatedWallPolygon,
   DEFAULT_DOOR_WIDTH,
   DEFAULT_WALL_THICKNESS,
   isValidPolygon,
   translatePolygon,
+  wallRotation,
 } from "./lib/map-geometry"
 import {
   getObject,
@@ -64,7 +65,8 @@ function createDefaultRoom({ size, wallThickness }: { size: number; wallThicknes
     polygonWalls: walls.map(wall => ({
       id: wall.polygonWallId,
       kind: "polygonWall",
-      vertices: createWallPolygon(wall),
+      vertices: createUnrotatedWallPolygon(wall),
+      rotation: wallRotation(wall),
     })),
     openings: [
       {
@@ -203,7 +205,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const polygonWall = {
       id: polygonWallId,
       kind: "polygonWall" as const,
-      vertices: createWallPolygon(editorWall),
+      vertices: createUnrotatedWallPolygon(editorWall),
+      rotation: wallRotation(editorWall),
     }
 
     set(state => ({
@@ -302,7 +305,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             walls: state.document.walls.map(candidate => candidate.id === id ? nextWall : candidate),
             polygonWalls: state.document.polygonWalls.map(candidate =>
               candidate.id === wall.polygonWallId
-                ? { ...candidate, vertices: createWallPolygon(nextWall) }
+                ? { ...candidate, vertices: createUnrotatedWallPolygon(nextWall), rotation: wallRotation(nextWall) }
                 : candidate
             ),
           },
@@ -316,8 +319,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           document: {
             ...state.document,
             polygonWalls: state.document.polygonWalls.map(candidate =>
-              candidate.id === id && nextVertices && isValidPolygon(nextVertices)
-                ? { ...candidate, vertices: nextVertices }
+              candidate.id === id
+                ? {
+                  ...candidate,
+                  vertices: nextVertices && isValidPolygon(nextVertices) ? nextVertices : candidate.vertices,
+                  rotation: patch.rotation ?? candidate.rotation,
+                }
                 : candidate
             ),
           },

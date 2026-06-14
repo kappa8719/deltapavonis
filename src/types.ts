@@ -18,6 +18,7 @@ export type PolygonWall = {
   id: string
   kind: "polygonWall"
   vertices: Vec2[]
+  rotation: number
   material?: string
 }
 

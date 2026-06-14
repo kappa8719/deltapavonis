@@ -1,7 +1,7 @@
 import * as PIXI from "pixi.js"
 import {
-  createWallPolygon,
   getOpeningDefaultWidth,
+  getPolygonWallWorldVertices,
   getRotatedRect,
   getWallQuad,
   PIXELS_PER_UNIT,
@@ -585,7 +585,7 @@ export class PixiRenderer {
 
     for (const polygonWall of [...store.document.polygonWalls].reverse()) {
       if (isLinkedPolygonWall(store.document, polygonWall.id)) continue
-      if (pointInPolygon(point, polygonWall.vertices)) {
+      if (pointInPolygon(point, getPolygonWallWorldVertices(polygonWall))) {
         return polygonWall.id
       }
     }
@@ -599,7 +599,7 @@ export class PixiRenderer {
   }
 
   private pointHitsWall(point: Vec2, wall: Wall, padding: number) {
-    return pointInPolygon(point, createWallPolygon({ ...wall, thickness: wall.thickness + padding * 2 }))
+    return pointInPolygon(point, getWallQuad(wall, 0, wallLength(wall), wall.thickness + padding * 2))
   }
 
   private pointHitsReferenceImage(point: Vec2, img: ReferenceImage): boolean {
@@ -763,10 +763,11 @@ export class PixiRenderer {
 
     for (const polygonWall of document.polygonWalls) {
       const graphics = new PIXI.Graphics()
+      const vertices = getPolygonWallWorldVertices(polygonWall)
 
       this.drawQuad(
         graphics,
-        polygonWall.vertices,
+        vertices,
         toScreen,
         COLORS.wallFill,
         COLORS.wall
@@ -775,7 +776,7 @@ export class PixiRenderer {
       if (selected.has(polygonWall.id)) {
         this.drawQuad(
           graphics,
-          polygonWall.vertices,
+          vertices,
           toScreen,
           COLORS.selection,
           COLORS.selection,
@@ -1091,7 +1092,8 @@ export class PixiRenderer {
     zoom: number
   ) {
     const graphics = this.overlayLayer
-    const points = polygonWall.vertices.map(vertex => toScreen(vertex.x, vertex.y))
+    const vertices = getPolygonWallWorldVertices(polygonWall)
+    const points = vertices.map(vertex => toScreen(vertex.x, vertex.y))
     if (!points.length) return
 
     graphics.moveTo(points[0].x, points[0].y)
@@ -1107,7 +1109,7 @@ export class PixiRenderer {
       graphics.stroke({ color: 0xffffff, width: 1, alpha: 0.6 })
     }
 
-    const centroid = polygonCentroid(polygonWall.vertices)
+    const centroid = polygonCentroid(vertices)
     const centroidScreen = toScreen(centroid.x, centroid.y)
     const label = new PIXI.Text({
       text: `${polygonWall.vertices.length} vertices`,

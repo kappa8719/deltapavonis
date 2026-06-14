@@ -69,6 +69,11 @@ export function wallVector(wall: Wall): Vec2 {
   }
 }
 
+export function wallRotation(wall: Wall) {
+  const delta = wallVector(wall)
+  return (Math.atan2(delta.y, delta.x) * 180) / Math.PI
+}
+
 export function wallLength(wall: Wall) {
   const delta = wallVector(wall)
   return Math.hypot(delta.x, delta.y)
@@ -334,10 +339,51 @@ export function getRotatedRect(center: Vec2, width: number, depth: number, rotat
   }))
 }
 
+export function rotatePolygon(vertices: Vec2[], rotation: number, center = polygonCentroid(vertices)): Vec2[] {
+  if (Math.abs(rotation) < EPSILON) return vertices.map(vertex => ({ ...vertex }))
+
+  const rad = (rotation * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+
+  return vertices.map(vertex => {
+    const dx = vertex.x - center.x
+    const dy = vertex.y - center.y
+    return {
+      x: center.x + dx * cos - dy * sin,
+      y: center.y + dx * sin + dy * cos,
+    }
+  })
+}
+
+export function createUnrotatedWallPolygon(wall: Pick<Wall, "a" | "b" | "thickness">): Vec2[] {
+  const length = Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y)
+  if (length < EPSILON) return []
+
+  const center = {
+    x: (wall.a.x + wall.b.x) / 2,
+    y: (wall.a.y + wall.b.y) / 2,
+  }
+  const halfLength = length / 2
+  const halfThickness = wall.thickness / 2
+
+  return [
+    { x: center.x - halfLength, y: center.y - halfThickness },
+    { x: center.x + halfLength, y: center.y - halfThickness },
+    { x: center.x + halfLength, y: center.y + halfThickness },
+    { x: center.x - halfLength, y: center.y + halfThickness },
+  ]
+}
+
+export function getPolygonWallWorldVertices(polygonWall: Pick<PolygonWall, "vertices" | "rotation">): Vec2[] {
+  return rotatePolygon(polygonWall.vertices, polygonWall.rotation)
+}
+
 export function polygonWallFromWall(wall: Wall): PolygonWall {
   return {
     id: wall.polygonWallId,
     kind: "polygonWall",
-    vertices: createWallPolygon(wall),
+    vertices: createUnrotatedWallPolygon(wall),
+    rotation: wallRotation(wall),
   }
 }
