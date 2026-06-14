@@ -1,40 +1,32 @@
 /**
- * Delta Pavonis Map Format — load/save for the editor.
+ * Delta Pavonis Map Format v3 - tilemap floors plus polygon walls.
  */
 
 import { createUnrotatedWallPolygon, isValidPolygon, wallRotation } from "./map-geometry"
-import type { MapDocument, Opening, PolygonWall, Prop, Wall } from "../types"
+import { findTilesetForGid, getTilesetRange, sortTilemap } from "./tilemap"
+import type {
+  FloorTilemap,
+  MapDocument,
+  Opening,
+  PolygonWall,
+  Prop,
+  TileChunk,
+  TileLayer,
+  TilesetAsset,
+  Wall,
+} from "../types"
 
-export const MAP_FORMAT_VERSION = 2 as const
+export const MAP_FORMAT_VERSION = 3 as const
 
 export type Vec2 = { x: number; y: number }
 
-export type Rect = { x: number; y: number; w: number; h: number }
-
 export type MapFile = {
   version: typeof MAP_FORMAT_VERSION
-  meta: MapMetadata
-  bounds: Rect
-  surfaces: Surface[]
+  tilemap: FloorTilemap
   walls: SpecWall[]
-  openings: SpecOpening[]
+  doors: SpecOpening[]
   objects: SpecObject[]
   zones?: SpecZone[]
-}
-
-export type MapMetadata = {
-  name: string
-  createdAt?: string
-  updatedAt?: string
-}
-
-export type Surface = {
-  id: string
-  polygon: Vec2[]
-  material: string
-  layer?: number
-  walkable?: boolean
-  edge?: "auto" | "hard" | "soft"
 }
 
 export type SpecEditorWall = {
@@ -91,39 +83,124 @@ function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new MapFormatError(message)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
 function isVec2(v: unknown): v is Vec2 {
-  return typeof v === "object" && v !== null && typeof (v as Record<string, unknown>).x === "number" && typeof (v as Record<string, unknown>).y === "number"
+  return isRecord(v) && typeof v.x === "number" && typeof v.y === "number"
 }
 
 function isPolygon(v: unknown): v is Vec2[] {
   return Array.isArray(v) && isValidPolygon(v)
 }
 
-export function validateMapFile(data: unknown): MapFile {
-  assert(typeof data === "object" && data !== null, "map file must be a JSON object")
-  const obj = data as Record<string, unknown>
+function validateTileChunk(chunk: unknown, path: string): TileChunk {
+  assert(isRecord(chunk), `${path} must be an object`)
+  assert(Number.isInteger(chunk.x), `${path}.x must be an integer`)
+  assert(Number.isInteger(chunk.y), `${path}.y must be an integer`)
+  const widthValue = chunk.width
+  const heightValue = chunk.height
+  assert(Number.isInteger(widthValue) && (widthValue as number) > 0, `${path}.width must be a positive integer`)
+  assert(Number.isInteger(heightValue) && (heightValue as number) > 0, `${path}.height must be a positive integer`)
+  assert(Array.isArray(chunk.data), `${path}.data must be an array`)
+  const width = widthValue as number
+  const height = heightValue as number
+  assert(chunk.data.length === width * height, `${path}.data length must equal width * height`)
+  for (const [i, gid] of chunk.data.entries()) {
+    assert(Number.isInteger(gid) && gid >= 0, `${path}.data[${i}] must be a non-negative integer GID`)
+  }
+  return chunk as unknown as TileChunk
+}
 
-  assert(obj.version === MAP_FORMAT_VERSION, `unsupported version: ${obj.version}`)
+function validateTileLayer(layer: unknown, index: number): TileLayer {
+  const path = `tilemap.layers[${index}]`
+  assert(isRecord(layer), `${path} must be an object`)
+  assert(typeof layer.id === "string" && layer.id.length > 0, `${path}.id must be a string`)
+  assert(typeof layer.name === "string", `${path}.name must be a string`)
+  assert(Number.isInteger(layer.order), `${path}.order must be an integer`)
+  assert(typeof layer.visible === "boolean", `${path}.visible must be a boolean`)
+  assert(typeof layer.locked === "boolean", `${path}.locked must be a boolean`)
+  assert(Array.isArray(layer.chunks), `${path}.chunks must be an array`)
 
-  assert(typeof obj.meta === "object" && obj.meta !== null, "meta must be an object")
-  assert(typeof (obj.meta as Record<string, unknown>).name === "string", "meta.name must be a string")
+  const seenChunks = new Set<string>()
+  const chunks = layer.chunks.map((chunk, chunkIndex) => {
+    const validated = validateTileChunk(chunk, `${path}.chunks[${chunkIndex}]`)
+    const key = `${validated.x},${validated.y}`
+    assert(!seenChunks.has(key), `${path}.chunks has duplicate coordinate ${key}`)
+    seenChunks.add(key)
+    return validated
+  })
 
-  assert(typeof obj.bounds === "object" && obj.bounds !== null, "bounds must be an object")
-  const b = obj.bounds as Record<string, unknown>
-  assert(typeof b.x === "number" && typeof b.y === "number" && typeof b.w === "number" && typeof b.h === "number",
-    "bounds must have numeric x, y, w, h")
+  return { ...(layer as unknown as TileLayer), chunks }
+}
 
-  assert(Array.isArray(obj.surfaces), "surfaces must be an array")
-  for (const [i, s] of obj.surfaces.entries()) {
-    const surf = s as Record<string, unknown>
-    assert(typeof surf.id === "string", `surfaces[${i}].id must be a string`)
-    assert(isPolygon(surf.polygon), `surfaces[${i}].polygon must be a valid polygon`)
-    assert(typeof surf.material === "string", `surfaces[${i}].material must be a string`)
+function validateTilemap(tilemap: unknown, assets: Record<string, TilesetAsset> = {}): FloorTilemap {
+  assert(isRecord(tilemap), "tilemap must be an object")
+  assert(typeof tilemap.tileSize === "number" && tilemap.tileSize > 0, "tilemap.tileSize must be a positive number")
+  assert(Array.isArray(tilemap.tilesets), "tilemap.tilesets must be an array")
+  assert(Array.isArray(tilemap.layers), "tilemap.layers must be an array")
+
+  const seenTilesets = new Set<string>()
+  const refs = tilemap.tilesets.map((ref, index) => {
+    assert(isRecord(ref), `tilemap.tilesets[${index}] must be an object`)
+    assert(typeof ref.tilesetId === "string" && ref.tilesetId.length > 0, `tilemap.tilesets[${index}].tilesetId must be a string`)
+    const firstGid = ref.firstGid
+    assert(Number.isInteger(firstGid) && (firstGid as number) > 0, `tilemap.tilesets[${index}].firstGid must be a positive integer`)
+    assert(!seenTilesets.has(ref.tilesetId), `duplicate tileset id: ${ref.tilesetId}`)
+    seenTilesets.add(ref.tilesetId)
+    return { tilesetId: ref.tilesetId, firstGid: firstGid as number }
+  })
+
+  const knownRanges = refs
+    .map(ref => {
+      const asset = assets[ref.tilesetId]
+      return asset ? { id: ref.tilesetId, ...getTilesetRange(ref, asset) } : null
+    })
+    .filter((range): range is { id: string; start: number; end: number } => Boolean(range))
+
+  for (let i = 0; i < knownRanges.length; i++) {
+    for (let j = i + 1; j < knownRanges.length; j++) {
+      const a = knownRanges[i]
+      const b = knownRanges[j]
+      assert(a.end < b.start || b.end < a.start, `tileset GID ranges overlap: ${a.id} and ${b.id}`)
+    }
   }
 
-  assert(Array.isArray(obj.walls), "walls must be an array")
+  const seenLayers = new Set<string>()
+  const seenOrders = new Set<number>()
+  const layers = tilemap.layers.map((layer, index) => {
+    const validated = validateTileLayer(layer, index)
+    assert(!seenLayers.has(validated.id), `duplicate layer id: ${validated.id}`)
+    assert(!seenOrders.has(validated.order), `duplicate layer order: ${validated.order}`)
+    seenLayers.add(validated.id)
+    seenOrders.add(validated.order)
+
+    for (const chunk of validated.chunks) {
+      for (const gid of chunk.data) {
+        if (gid === 0) continue
+        if (knownRanges.length > 0) {
+          assert(Boolean(findTilesetForGid({ tileSize: tilemap.tileSize as number, tilesets: refs, layers: [] }, assets, gid)),
+            `invalid GID ${gid} in layer ${validated.id}`)
+        }
+      }
+    }
+
+    return validated
+  })
+
+  return sortTilemap({ tileSize: tilemap.tileSize as number, tilesets: refs, layers })
+}
+
+export function validateMapFile(data: unknown, assets: Record<string, TilesetAsset> = {}): MapFile {
+  assert(isRecord(data), "map file must be a JSON object")
+  assert(data.version === MAP_FORMAT_VERSION, `unsupported version: ${data.version}. This editor only loads map format v3 tilemaps.`)
+
+  const tilemap = validateTilemap(data.tilemap, assets)
+
+  assert(Array.isArray(data.walls), "walls must be an array")
   const polygonWallIds = new Set<string>()
-  for (const [i, w] of obj.walls.entries()) {
+  for (const [i, w] of data.walls.entries()) {
     const wall = w as Record<string, unknown>
     assert(typeof wall.id === "string", `walls[${i}].id must be a string`)
     assert(wall.kind === "wall" || wall.kind === "polygonWall", `walls[${i}].kind must be wall or polygonWall`)
@@ -136,39 +213,39 @@ export function validateMapFile(data: unknown): MapFile {
     } else {
       assert(isPolygon(wall.vertices), `walls[${i}].vertices must be a valid polygon`)
       assert(wall.rotation === undefined || typeof wall.rotation === "number", `walls[${i}].rotation must be a number`)
-      polygonWallIds.add(wall.id)
+      polygonWallIds.add(wall.id as string)
     }
   }
 
-  for (const [i, w] of obj.walls.entries()) {
+  for (const [i, w] of data.walls.entries()) {
     const wall = w as Record<string, unknown>
     if (wall.kind === "wall") {
       assert(polygonWallIds.has(wall.polygonWallId as string), `walls[${i}].polygonWallId must reference a polygonWall`)
     }
   }
 
-  assert(Array.isArray(obj.openings), "openings must be an array")
-  for (const [i, d] of obj.openings.entries()) {
+  assert(Array.isArray(data.doors), "doors must be an array")
+  for (const [i, d] of data.doors.entries()) {
     const opening = d as Record<string, unknown>
-    assert(typeof opening.id === "string", `openings[${i}].id must be a string`)
-    assert(opening.kind === "door" || opening.kind === "window", `openings[${i}].kind must be door or window`)
-    assert(isVec2(opening.position), `openings[${i}].position must be a Vec2`)
-    assert(typeof opening.rotation === "number", `openings[${i}].rotation must be a number`)
-    assert(typeof opening.width === "number" && opening.width > 0, `openings[${i}].width must be a positive number`)
-    assert(typeof opening.depth === "number" && opening.depth > 0, `openings[${i}].depth must be a positive number`)
+    assert(typeof opening.id === "string", `doors[${i}].id must be a string`)
+    assert(opening.kind === "door" || opening.kind === "window", `doors[${i}].kind must be door or window`)
+    assert(isVec2(opening.position), `doors[${i}].position must be a Vec2`)
+    assert(typeof opening.rotation === "number", `doors[${i}].rotation must be a number`)
+    assert(typeof opening.width === "number" && opening.width > 0, `doors[${i}].width must be a positive number`)
+    assert(typeof opening.depth === "number" && opening.depth > 0, `doors[${i}].depth must be a positive number`)
   }
 
-  assert(Array.isArray(obj.objects), "objects must be an array")
-  for (const [i, o] of obj.objects.entries()) {
+  assert(Array.isArray(data.objects), "objects must be an array")
+  for (const [i, o] of data.objects.entries()) {
     const object = o as Record<string, unknown>
     assert(typeof object.id === "string", `objects[${i}].id must be a string`)
     assert(typeof object.kind === "string", `objects[${i}].kind must be a string`)
     assert(isVec2(object.position), `objects[${i}].position must be a Vec2`)
   }
 
-  if (obj.zones !== undefined) {
-    assert(Array.isArray(obj.zones), "zones must be an array")
-    for (const [i, z] of obj.zones.entries()) {
+  if (data.zones !== undefined) {
+    assert(Array.isArray(data.zones), "zones must be an array")
+    for (const [i, z] of data.zones.entries()) {
       const zone = z as Record<string, unknown>
       assert(typeof zone.id === "string", `zones[${i}].id must be a string`)
       assert(typeof zone.kind === "string", `zones[${i}].kind must be a string`)
@@ -176,28 +253,11 @@ export function validateMapFile(data: unknown): MapFile {
     }
   }
 
-  return obj as unknown as MapFile
+  return { ...(data as unknown as MapFile), tilemap }
 }
 
-export type SaveMeta = {
-  name: string
-}
-
-export function saveMap(
-  doc: MapDocument,
-  meta: SaveMeta,
-  bounds: Rect,
-): string {
-  const surfaces: Surface[] = [
-    {
-      id: "surface-floor",
-      polygon: rectToPolygon(bounds),
-      material: "concrete",
-      layer: 0,
-      walkable: true,
-      edge: "auto",
-    },
-  ]
+export function saveMap(doc: MapDocument, assets: Record<string, TilesetAsset>): string {
+  const tilemap = validateTilemap(doc.tilemap, assets)
 
   const walls: SpecWall[] = [
     ...doc.walls.map(w => ({
@@ -217,7 +277,7 @@ export function saveMap(
     })),
   ]
 
-  const openings: SpecOpening[] = doc.openings.map(opening => ({
+  const doors: SpecOpening[] = doc.openings.map(opening => ({
     id: opening.id,
     kind: opening.kind,
     position: { x: opening.position.x, y: opening.position.y },
@@ -233,18 +293,11 @@ export function saveMap(
     rotation: p.rotation,
   }))
 
-  const now = new Date().toISOString()
   const mapFile: MapFile = {
     version: MAP_FORMAT_VERSION,
-    meta: {
-      name: meta.name,
-      createdAt: undefined,
-      updatedAt: now,
-    },
-    bounds,
-    surfaces,
+    tilemap,
     walls,
-    openings,
+    doors,
     objects,
   }
 
@@ -257,10 +310,10 @@ export type LoadResult = {
   counters: Record<string, number>
   roomWidth: number
   roomHeight: number
-  meta: MapMetadata
+  tilesetAssets?: Record<string, TilesetAsset>
 }
 
-export function loadMap(json: string): LoadResult {
+export function loadMap(json: string, assets: Record<string, TilesetAsset> = {}): LoadResult {
   let parsed: unknown
   try {
     parsed = JSON.parse(json)
@@ -268,7 +321,7 @@ export function loadMap(json: string): LoadResult {
     throw new MapFormatError("invalid JSON - could not parse")
   }
 
-  const mapFile = validateMapFile(parsed)
+  const mapFile = validateMapFile(parsed, assets)
 
   const walls: Wall[] = []
   const polygonWalls: PolygonWall[] = []
@@ -303,7 +356,7 @@ export function loadMap(json: string): LoadResult {
     }
   }
 
-  const openings: Opening[] = mapFile.openings.map(opening => ({
+  const openings: Opening[] = mapFile.doors.map(opening => ({
     id: opening.id,
     kind: opening.kind,
     position: { x: opening.position.x, y: opening.position.y },
@@ -354,6 +407,7 @@ export function loadMap(json: string): LoadResult {
 
   return {
     document: {
+      tilemap: mapFile.tilemap,
       walls,
       polygonWalls,
       openings,
@@ -369,17 +423,7 @@ export function loadMap(json: string): LoadResult {
       prop: propCount,
       referenceImage: 0,
     },
-    roomWidth: mapFile.bounds.w,
-    roomHeight: mapFile.bounds.h,
-    meta: mapFile.meta,
+    roomWidth: 100,
+    roomHeight: 100,
   }
-}
-
-function rectToPolygon(r: Rect): Vec2[] {
-  return [
-    { x: r.x, y: r.y },
-    { x: r.x + r.w, y: r.y },
-    { x: r.x + r.w, y: r.y + r.h },
-    { x: r.x, y: r.y + r.h },
-  ]
 }

@@ -1,4 +1,5 @@
 import { useEditorStore } from "../store"
+import { worldToTile } from "../lib/tilemap"
 import { getOpeningCount } from "../types"
 
 export function StatusBar() {
@@ -9,8 +10,12 @@ export function StatusBar() {
   const snapSize = useEditorStore(s => s.snapSize)
   const wallToolThickness = useEditorStore(s => s.wallToolThickness)
   const doc = useEditorStore(s => s.document)
+  const floor = useEditorStore(s => s.floor)
   const roomWidth = useEditorStore(s => s.roomWidth)
   const roomHeight = useEditorStore(s => s.roomHeight)
+  const activeLayer = doc.tilemap.layers.find(layer => layer.id === floor.activeLayerId)
+  const tile = worldToTile({ x: mouseX, y: mouseY }, doc.tilemap.tileSize)
+  const isFloorTool = ["pencil", "eraser", "rectangle", "bucket", "tileSelection", "stamp"].includes(activeTool)
 
   const total =
     doc.walls.length +
@@ -22,6 +27,14 @@ export function StatusBar() {
   return (
     <div className="flex items-center h-8 bg-panel border-t border-border px-4 gap-0 text-sm text-text-dim select-none shrink-0">
       <Seg label="Mouse" value={`(${mouseX}, ${mouseY})`} mono />
+      {isFloorTool && (
+        <>
+          <Sep />
+          <Seg label="Tile" value={`(${tile.x}, ${tile.y})`} mono />
+          <Sep />
+          <Seg label="Layer" value={activeLayer?.name ?? "None"} />
+        </>
+      )}
       <Sep />
       <Seg label="Grid" value={`${snapSize}u`} />
       <Sep />

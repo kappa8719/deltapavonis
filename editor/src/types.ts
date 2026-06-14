@@ -63,7 +63,97 @@ export type ReferenceImage = {
   naturalHeight: number
 }
 
+export type TilesetReference = {
+  tilesetId: string
+  firstGid: number
+}
+
+export type TileLayer = {
+  id: string
+  name: string
+  order: number
+  visible: boolean
+  locked: boolean
+  chunks: TileChunk[]
+}
+
+export type TileChunk = {
+  x: number
+  y: number
+  width: number
+  height: number
+  data: number[]
+}
+
+export type FloorTilemap = {
+  tileSize: number
+  tilesets: TilesetReference[]
+  layers: TileLayer[]
+}
+
+export type TileDefinition = {
+  name?: string
+  tags?: string[]
+}
+
+export type TilesetAsset = {
+  id: string
+  name: string
+  texturePath: string
+  tileWidth: number
+  tileHeight: number
+  columns: number
+  tileCount: number
+  margin?: number
+  spacing?: number
+  tiles?: Record<number, TileDefinition>
+}
+
+export type FloorTool =
+  | "pencil"
+  | "eraser"
+  | "rectangle"
+  | "bucket"
+  | "tileSelection"
+  | "stamp"
+
+export type FloorEditorState = {
+  activeLayerId: string | null
+  activeTilesetId: string | null
+  selectedTileIds: number[]
+  activeTool: FloorTool
+  paletteZoom: number
+  clipboard: TileClipboard | null
+  selection: TileSelection | null
+}
+
+export type TileSelection = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export type TileClipboard = {
+  width: number
+  height: number
+  data: number[]
+}
+
+export type TileCellChange = {
+  x: number
+  y: number
+  before: number
+  after: number
+}
+
+export type TileEditCommand = {
+  layerId: string
+  changes: TileCellChange[]
+}
+
 export type MapDocument = {
+  tilemap: FloorTilemap
   walls: Wall[]
   polygonWalls: PolygonWall[]
   openings: Opening[]
@@ -71,7 +161,7 @@ export type MapDocument = {
   referenceImages: ReferenceImage[]
 }
 
-export type ActiveTool = "select" | "wall" | "door" | "window" | "prop"
+export type ActiveTool = "select" | "wall" | "door" | "window" | "prop" | FloorTool
 
 export type MapObject = Wall | PolygonWall | Opening | Prop | ReferenceImage
 

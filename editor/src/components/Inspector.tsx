@@ -10,6 +10,88 @@ import {
 } from "../types"
 import type { ObjectPatch, Opening, PolygonWall, Prop, ReferenceImage, Wall } from "../types"
 
+function FloorLayerManager() {
+  const layers = useEditorStore(state => state.document.tilemap.layers)
+  const activeLayerId = useEditorStore(state => state.floor.activeLayerId)
+  const setActiveLayer = useEditorStore(state => state.setActiveLayer)
+  const createTileLayer = useEditorStore(state => state.createTileLayer)
+  const deleteTileLayer = useEditorStore(state => state.deleteTileLayer)
+  const renameTileLayer = useEditorStore(state => state.renameTileLayer)
+  const setTileLayerVisibility = useEditorStore(state => state.setTileLayerVisibility)
+  const setTileLayerLocked = useEditorStore(state => state.setTileLayerLocked)
+  const moveTileLayer = useEditorStore(state => state.moveTileLayer)
+  const orderedLayers = [...layers].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+
+  return (
+    <>
+      <SectionHeader title="Floor Layers" />
+      <div className="px-4 pb-3 space-y-2">
+        {orderedLayers.map(layer => {
+          const active = layer.id === activeLayerId
+          return (
+            <div
+              key={layer.id}
+              className={cn(
+                "rounded-md border p-2 space-y-2",
+                active ? "border-accent bg-accent/10" : "border-border bg-muted/30"
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setActiveLayer(layer.id)}
+                  className="text-xs text-text-dim hover:text-text w-6 text-left"
+                  title="Set active layer"
+                >
+                  {layer.order}
+                </button>
+                <input
+                  value={layer.name}
+                  onChange={event => renameTileLayer(layer.id, event.target.value)}
+                  className="min-w-0 flex-1 bg-bg border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <label className="flex items-center gap-1 text-text-dim">
+                  <input
+                    type="checkbox"
+                    checked={layer.visible}
+                    onChange={event => setTileLayerVisibility(layer.id, event.target.checked)}
+                  />
+                  Visible
+                </label>
+                <label className="flex items-center gap-1 text-text-dim">
+                  <input
+                    type="checkbox"
+                    checked={layer.locked}
+                    onChange={event => setTileLayerLocked(layer.id, event.target.checked)}
+                  />
+                  Locked
+                </label>
+                <div className="flex-1" />
+                <button onClick={() => moveTileLayer(layer.id, -1)} className="text-text-dim hover:text-text px-1">Up</button>
+                <button onClick={() => moveTileLayer(layer.id, 1)} className="text-text-dim hover:text-text px-1">Down</button>
+                <button
+                  onClick={() => deleteTileLayer(layer.id)}
+                  disabled={layers.length <= 1}
+                  className="text-red-400 hover:text-red-300 px-1 disabled:opacity-40"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          )
+        })}
+        <button
+          onClick={() => createTileLayer()}
+          className="w-full py-2 text-sm bg-muted hover:bg-muted/70 text-text rounded-md border border-border transition-colors"
+        >
+          Add layer
+        </button>
+      </div>
+    </>
+  )
+}
+
 function FieldRow({
   label,
   value,
@@ -341,7 +423,10 @@ export function Inspector() {
       </div>
 
       {!object ? (
-        <div className="px-4 py-8 text-sm text-text-dim text-center">Nothing selected</div>
+        <div className="flex-1 overflow-y-auto">
+          <div className="px-4 py-5 text-sm text-text-dim text-center">Nothing selected</div>
+          <FloorLayerManager />
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
           <div className="px-4 py-3 border-b border-border">

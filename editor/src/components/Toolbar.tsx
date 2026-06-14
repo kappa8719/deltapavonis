@@ -2,7 +2,8 @@ import {
   MousePointer2, Square, DoorOpen, AppWindow, Box,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Maximize2,
   Grid3x3, ChevronUp, ChevronDown, Play, Settings,
-  ZoomIn, ZoomOut, ImagePlus, Download, Upload,
+  ZoomIn, ZoomOut, ImagePlus, Download, Upload, Pencil, Eraser,
+  PaintBucket, MousePointerSquareDashed, Stamp,
 } from "lucide-react"
 import { useEditorStore } from "../store"
 import type { ActiveTool } from "../types"
@@ -11,6 +12,12 @@ import { saveMap, loadMap, MapFormatError } from "../lib/map-format"
 
 const tools: { id: ActiveTool; label: string; icon: React.FC<{ size?: number }> }[] = [
   { id: "select", label: "Select", icon: MousePointer2 },
+  { id: "pencil", label: "Pencil", icon: Pencil },
+  { id: "eraser", label: "Eraser", icon: Eraser },
+  { id: "rectangle", label: "Rect", icon: Square },
+  { id: "bucket", label: "Fill", icon: PaintBucket },
+  { id: "tileSelection", label: "Tiles", icon: MousePointerSquareDashed },
+  { id: "stamp", label: "Stamp", icon: Stamp },
   { id: "wall",   label: "Wall",   icon: Square },
   { id: "door",   label: "Door",   icon: DoorOpen },
   { id: "window", label: "Window", icon: AppWindow },
@@ -100,8 +107,7 @@ export function Toolbar() {
   const setGridVisible = useEditorStore(s => s.setGridVisible)
   const setCamera = useEditorStore(s => s.setCamera)
   const mapDoc = useEditorStore(s => s.document)
-  const roomWidth = useEditorStore(s => s.roomWidth)
-  const roomHeight = useEditorStore(s => s.roomHeight)
+  const tilesetAssets = useEditorStore(s => s.tilesetAssets)
   const importMapAction = useEditorStore(s => s.importMap)
 
   const zoomPct = Math.round(zoom * 100)
@@ -113,12 +119,7 @@ export function Toolbar() {
 
   const handleExportMap = () => {
     if (!mapDoc) return
-    const json = saveMap(mapDoc, { name: "untitled" }, {
-      x: -roomWidth / 2,
-      y: -roomHeight / 2,
-      w: roomWidth,
-      h: roomHeight,
-    })
+    const json = saveMap(mapDoc, tilesetAssets)
     const blob = new Blob([json], { type: "application/json" })
     const url = URL.createObjectURL(blob)
     const a = globalThis.document.createElement("a")
@@ -141,7 +142,7 @@ export function Toolbar() {
         const text = reader.result
         if (typeof text !== "string") return
         try {
-          const result = loadMap(text)
+          const result = loadMap(text, tilesetAssets)
           importMapAction(result)
         } catch (err) {
           if (err instanceof MapFormatError) {

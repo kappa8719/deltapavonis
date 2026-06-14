@@ -1,5 +1,11 @@
 import * as PIXI from "pixi.js"
 import {
+  findTilesetForGid,
+  getTile,
+  worldToTile,
+  type TileCoord,
+} from "../lib/tilemap"
+import {
   getOpeningDefaultWidth,
   getPolygonWallWorldVertices,
   getRotatedRect,
@@ -19,6 +25,9 @@ import type {
   Opening,
   PolygonWall,
   ReferenceImage,
+  TileCellChange,
+  TileChunk,
+  TilesetAsset,
   Vec2,
   Wall,
   WallOpeningKind,
@@ -52,6 +61,8 @@ const COLORS = {
   handleFill: 0x4ea1ff,
   dimLabel: 0x4ea1ff,
   invalid: 0xc2410c,
+  tilePreview: 0x9cc9ff,
+  tileSelection: 0xf5c542,
 }
 
 /**
@@ -128,6 +139,11 @@ type WallEndpointHit = {
   endpoint: "a" | "b"
 }
 
+type TileChunkRenderCache = {
+  chunk: TileChunk
+  container: PIXI.Container
+}
+
 export class PixiRenderer {
   app: PIXI.Application
   private options: PixiRendererOptions
@@ -136,12 +152,16 @@ export class PixiRenderer {
   private gridLayer: PIXI.Graphics
   private referenceImageLayer: PIXI.Container
   private roomLayer: PIXI.Graphics
+  private floorLayer: PIXI.Container
   private objectLayer: PIXI.Container
   private overlayLayer: PIXI.Graphics
   private previewLayer: PIXI.Graphics
   private unsub: () => void
   private referenceContainers: Map<string, PIXI.Container> = new Map()
   private referenceSrcs: Map<string, string> = new Map()
+  private tilesetTextures: Map<string, PIXI.Texture> = new Map()
+  private tilesetTextureSources: Map<string, string> = new Map()
+  private tileChunkContainers: Map<string, TileChunkRenderCache> = new Map()
 
   /** Per-reference-image children kept by direct reference. Sprite is null until texture loads. */
   private refChildren = new Map<string, { gfx: PIXI.Graphics; sprite: PIXI.Sprite | null }>()
@@ -189,6 +209,15 @@ export class PixiRenderer {
   private areaSelectionAdds = false
   private pendingSingleSelectionId: string | null = null
 
+  private isPaintingTiles = false
+  private isDraggingTileRect = false
+  private isDraggingTileSelection = false
+  private isMovingTileSelection = false
+  private tileDragStart: TileCoord | null = null
+  private tileDragCurrent: TileCoord | null = null
+  private tileMoveGrabOffset: TileCoord = { x: 0, y: 0 }
+  private tileStrokeChanges = new Map<string, TileCellChange>()
+
   private constructor(app: PIXI.Application, options: PixiRendererOptions = {}) {
     this.app = app
     this.options = options
@@ -198,6 +227,7 @@ export class PixiRenderer {
     this.gridLayer = new PIXI.Graphics()
     this.referenceImageLayer = new PIXI.Container()
     this.roomLayer = new PIXI.Graphics()
+    this.floorLayer = new PIXI.Container()
     this.objectLayer = new PIXI.Container()
     this.overlayLayer = new PIXI.Graphics()
     this.previewLayer = new PIXI.Graphics()
@@ -205,6 +235,7 @@ export class PixiRenderer {
     this.app.stage.addChild(this.gridLayer)
     this.app.stage.addChild(this.referenceImageLayer)
     this.app.stage.addChild(this.roomLayer)
+    this.app.stage.addChild(this.floorLayer)
     this.app.stage.addChild(this.objectLayer)
     this.app.stage.addChild(this.overlayLayer)
     this.app.stage.addChild(this.previewLayer)
@@ -371,6 +402,50 @@ export class PixiRenderer {
     const tool = store.activeTool
     const world = this.screenToWorld(sx, sy)
 
+    if (this.isFloorTool(tool)) {
+      const tile = worldToTile(world, store.document.tilemap.tileSize)
+      if (tool === "pencil" || tool === "eraser" || tool === "stamp") {
+        this.isPaintingTiles = true
+        this.tileStrokeChanges.clear()
+        this.addTileStrokeAt(tile, tool === "eraser")
+        return
+      }
+
+      if (tool === "bucket") {
+        store.bucketFill(tile)
+        return
+      }
+
+      if (tool === "rectangle") {
+        this.isDraggingTileRect = true
+        this.tileDragStart = tile
+        this.tileDragCurrent = tile
+        this.renderTileRectPreview(tile, tile)
+        return
+      }
+
+      if (tool === "tileSelection") {
+        const selection = store.floor.selection
+        if (selection &&
+          tile.x >= selection.x &&
+          tile.y >= selection.y &&
+          tile.x < selection.x + selection.width &&
+          tile.y < selection.y + selection.height
+        ) {
+          this.isMovingTileSelection = true
+          this.tileMoveGrabOffset = { x: tile.x - selection.x, y: tile.y - selection.y }
+          this.tileDragCurrent = { x: selection.x, y: selection.y }
+          this.renderTileMovePreview(this.tileDragCurrent, selection.width, selection.height)
+          return
+        }
+        this.isDraggingTileSelection = true
+        this.tileDragStart = tile
+        this.tileDragCurrent = tile
+        this.renderTileRectPreview(tile, tile, true)
+        return
+      }
+    }
+
     if (tool === "select") {
       this.previewLayer.clear()
       const wallEndpointHit = this.hitTestWallEndpoint(sx, sy)
@@ -504,6 +579,32 @@ export class PixiRenderer {
       return
     }
 
+    if (this.isPaintingTiles) {
+      this.addTileStrokeAt(worldToTile(world, store.document.tilemap.tileSize), store.activeTool === "eraser")
+      return
+    }
+
+    if (this.isDraggingTileRect || this.isDraggingTileSelection) {
+      this.tileDragCurrent = worldToTile(world, store.document.tilemap.tileSize)
+      if (this.tileDragStart && this.tileDragCurrent) {
+        this.renderTileRectPreview(this.tileDragStart, this.tileDragCurrent, this.isDraggingTileSelection)
+      }
+      return
+    }
+
+    if (this.isMovingTileSelection) {
+      const selection = store.floor.selection
+      const tile = worldToTile(world, store.document.tilemap.tileSize)
+      if (selection) {
+        this.tileDragCurrent = {
+          x: tile.x - this.tileMoveGrabOffset.x,
+          y: tile.y - this.tileMoveGrabOffset.y,
+        }
+        this.renderTileMovePreview(this.tileDragCurrent, selection.width, selection.height)
+      }
+      return
+    }
+
     if (this.isDraggingObject && this.dragObjectId) {
       this.handleObjectDrag(sx, sy)
       return
@@ -537,6 +638,12 @@ export class PixiRenderer {
       return
     }
 
+    if (store.activeTool === "tileSelection" && store.floor.clipboard) {
+      const tile = worldToTile(world, store.document.tilemap.tileSize)
+      this.renderTileMovePreview(tile, store.floor.clipboard.width, store.floor.clipboard.height)
+      return
+    }
+
     this.previewLayer.clear()
   }
 
@@ -547,6 +654,50 @@ export class PixiRenderer {
     }
 
     if (event.button !== 0) return
+
+    if (this.isPaintingTiles) {
+      this.commitTileStroke()
+      this.isPaintingTiles = false
+      return
+    }
+
+    if (this.isDraggingTileRect) {
+      const store = useEditorStore.getState()
+      if (this.tileDragStart && this.tileDragCurrent) {
+        store.fillTileRect(this.tileDragStart, this.tileDragCurrent, store.activeTool === "eraser")
+      }
+      this.isDraggingTileRect = false
+      this.tileDragStart = null
+      this.tileDragCurrent = null
+      this.previewLayer.clear()
+      return
+    }
+
+    if (this.isDraggingTileSelection) {
+      const store = useEditorStore.getState()
+      if (this.tileDragStart && this.tileDragCurrent) {
+        const minX = Math.min(this.tileDragStart.x, this.tileDragCurrent.x)
+        const minY = Math.min(this.tileDragStart.y, this.tileDragCurrent.y)
+        const maxX = Math.max(this.tileDragStart.x, this.tileDragCurrent.x)
+        const maxY = Math.max(this.tileDragStart.y, this.tileDragCurrent.y)
+        store.setTileSelection({ x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 })
+      }
+      this.isDraggingTileSelection = false
+      this.tileDragStart = null
+      this.tileDragCurrent = null
+      this.previewLayer.clear()
+      return
+    }
+
+    if (this.isMovingTileSelection) {
+      if (this.tileDragCurrent) {
+        useEditorStore.getState().moveTileSelection(this.tileDragCurrent)
+      }
+      this.isMovingTileSelection = false
+      this.tileDragCurrent = null
+      this.previewLayer.clear()
+      return
+    }
 
     if (this.isDraggingObject) {
       this.finalizeObjectSelection(event)
@@ -599,7 +750,11 @@ export class PixiRenderer {
       !this.isDraggingObject &&
       !this.isDraggingWallEndpoint &&
       !this.isDraggingPolygonVertex &&
-      !this.isAreaSelecting
+      !this.isAreaSelecting &&
+      !this.isPaintingTiles &&
+      !this.isDraggingTileRect &&
+      !this.isDraggingTileSelection &&
+      !this.isMovingTileSelection
     ) {
       this.previewLayer.clear()
     }
@@ -873,6 +1028,127 @@ export class PixiRenderer {
       1.25,
       0.9
     )
+  }
+
+  private isFloorTool(tool: string) {
+    return tool === "pencil" ||
+      tool === "eraser" ||
+      tool === "rectangle" ||
+      tool === "bucket" ||
+      tool === "tileSelection" ||
+      tool === "stamp"
+  }
+
+  private getActiveTileLayer() {
+    const store = useEditorStore.getState()
+    const layerId = store.floor.activeLayerId ?? store.document.tilemap.layers[0]?.id
+    return store.document.tilemap.layers.find(layer => layer.id === layerId) ?? null
+  }
+
+  private getSelectedStamp() {
+    const store = useEditorStore.getState()
+    const tilesetId = store.floor.activeTilesetId
+    if (!tilesetId || !store.floor.selectedTileIds.length) return null
+    const ref = store.document.tilemap.tilesets.find(candidate => candidate.tilesetId === tilesetId)
+    const asset = store.tilesetAssets[tilesetId]
+    if (!ref || !asset) return null
+
+    const localIds = store.floor.selectedTileIds
+      .map(gid => gid - ref.firstGid)
+      .filter(localId => localId >= 0 && localId < asset.tileCount)
+    if (!localIds.length) return null
+
+    const xs = localIds.map(localId => localId % asset.columns)
+    const ys = localIds.map(localId => Math.floor(localId / asset.columns))
+    const minX = Math.min(...xs)
+    const minY = Math.min(...ys)
+    const maxX = Math.max(...xs)
+    const maxY = Math.max(...ys)
+    const width = maxX - minX + 1
+    const height = maxY - minY + 1
+    const selected = new Set(localIds)
+    const data: number[] = []
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const localId = (minY + y) * asset.columns + minX + x
+        data.push(selected.has(localId) ? ref.firstGid + localId : 0)
+      }
+    }
+    return { width, height, data }
+  }
+
+  private addTileStrokeAt(tile: TileCoord, erase: boolean) {
+    const store = useEditorStore.getState()
+    const layer = this.getActiveTileLayer()
+    if (!layer || layer.locked) return
+    const stamp = erase ? { width: 1, height: 1, data: [0] } : this.getSelectedStamp()
+    if (!stamp) return
+
+    for (let y = 0; y < stamp.height; y++) {
+      for (let x = 0; x < stamp.width; x++) {
+        const after = erase ? 0 : stamp.data[y * stamp.width + x]
+        if (after === 0 && !erase) continue
+        const tx = tile.x + x
+        const ty = tile.y + y
+        const key = `${tx},${ty}`
+        const existing = this.tileStrokeChanges.get(key)
+        const before = existing?.before ?? getTile(layer, tx, ty)
+        if (before === after && !existing) continue
+        this.tileStrokeChanges.set(key, { x: tx, y: ty, before, after })
+      }
+    }
+
+    this.renderTileBrushPreview(tile, stamp.width, stamp.height, store.activeTool === "eraser")
+  }
+
+  private commitTileStroke() {
+    const layer = this.getActiveTileLayer()
+    if (layer) {
+      useEditorStore.getState().applyTileEdit(layer.id, [...this.tileStrokeChanges.values()])
+    }
+    this.tileStrokeChanges.clear()
+    this.previewLayer.clear()
+  }
+
+  private renderTileBrushPreview(tile: TileCoord, width: number, height: number, erase: boolean) {
+    const store = useEditorStore.getState()
+    const tileSize = store.document.tilemap.tileSize
+    const toScreen = this.getToScreen()
+    const topLeft = toScreen(tile.x * tileSize, tile.y * tileSize)
+    const bottomRight = toScreen((tile.x + width) * tileSize, (tile.y + height) * tileSize)
+    this.previewLayer.clear()
+    this.previewLayer.rect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+    this.previewLayer.fill({ color: erase ? COLORS.invalid : COLORS.tilePreview, alpha: 0.16 })
+    this.previewLayer.stroke({ color: erase ? COLORS.invalid : COLORS.tilePreview, width: 1.5, alpha: 0.95 })
+  }
+
+  private renderTileRectPreview(start: TileCoord, end: TileCoord, selection = false) {
+    const store = useEditorStore.getState()
+    const tileSize = store.document.tilemap.tileSize
+    const minX = Math.min(start.x, end.x)
+    const minY = Math.min(start.y, end.y)
+    const maxX = Math.max(start.x, end.x) + 1
+    const maxY = Math.max(start.y, end.y) + 1
+    const toScreen = this.getToScreen()
+    const topLeft = toScreen(minX * tileSize, minY * tileSize)
+    const bottomRight = toScreen(maxX * tileSize, maxY * tileSize)
+    const color = selection ? COLORS.tileSelection : COLORS.tilePreview
+    this.previewLayer.clear()
+    this.previewLayer.rect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+    this.previewLayer.fill({ color, alpha: 0.12 })
+    this.previewLayer.stroke({ color, width: 1.5, alpha: 0.95 })
+  }
+
+  private renderTileMovePreview(tile: TileCoord, width: number, height: number) {
+    const store = useEditorStore.getState()
+    const tileSize = store.document.tilemap.tileSize
+    const toScreen = this.getToScreen()
+    const topLeft = toScreen(tile.x * tileSize, tile.y * tileSize)
+    const bottomRight = toScreen((tile.x + width) * tileSize, (tile.y + height) * tileSize)
+    this.previewLayer.clear()
+    this.previewLayer.rect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+    this.previewLayer.fill({ color: COLORS.tileSelection, alpha: 0.14 })
+    this.previewLayer.stroke({ color: COLORS.tileSelection, width: 1.5, alpha: 0.95 })
   }
 
   private getOpeningPreview(point: Vec2, kind: WallOpeningKind): OpeningPreview | null {
@@ -1158,7 +1434,9 @@ export class PixiRenderer {
     }
     this.renderReferenceImages(document, selection, toScreen, zoom)
     this.renderRoom(toScreen, store.roomWidth, store.roomHeight)
+    this.renderFloorTiles(document, cx, cy, zoom, cameraX, cameraY)
     this.renderObjects(document, selection, toScreen, zoom)
+    this.renderTileSelectionOverlay()
     this.renderRulers(width, height, cx, cy, zoom, cameraX, cameraY, gridSteps)
   }
 
@@ -1267,6 +1545,123 @@ export class PixiRenderer {
     )
     graphics.fill({ color: COLORS.roomFill, alpha: 0.4 })
     graphics.stroke({ color: COLORS.roomBorder, width: 1.5, alpha: 0.6 })
+  }
+
+  private renderFloorTiles(
+    document: MapDocument,
+    cx: number,
+    cy: number,
+    zoom: number,
+    cameraX: number,
+    cameraY: number,
+  ) {
+    const store = useEditorStore.getState()
+    this.floorLayer.position.set(cx + cameraX * zoom * PPU, cy + cameraY * zoom * PPU)
+    this.floorLayer.scale.set(zoom * PPU)
+    this.floorLayer.sortableChildren = true
+
+    const usedKeys = new Set<string>()
+    const layers = [...document.tilemap.layers].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+
+    for (const layer of layers) {
+      if (!layer.visible) continue
+      for (const chunk of layer.chunks) {
+        if (!chunk.data.some(gid => gid !== 0)) continue
+        const key = `${layer.id}:${chunk.x}:${chunk.y}`
+        usedKeys.add(key)
+        const cached = this.tileChunkContainers.get(key)
+        if (cached?.chunk === chunk) {
+          cached.container.visible = true
+          cached.container.zIndex = layer.order
+          continue
+        }
+
+        if (cached) {
+          this.floorLayer.removeChild(cached.container)
+          cached.container.destroy({ children: true })
+        }
+
+        const container = this.buildTileChunkContainer(document, store.tilesetAssets, chunk)
+        container.zIndex = layer.order
+        this.floorLayer.addChild(container)
+        this.tileChunkContainers.set(key, { chunk, container })
+      }
+    }
+
+    for (const [key, cached] of this.tileChunkContainers) {
+      if (usedKeys.has(key)) continue
+      this.floorLayer.removeChild(cached.container)
+      cached.container.destroy({ children: true })
+      this.tileChunkContainers.delete(key)
+    }
+  }
+
+  private getTilesetTexture(tilesetId: string, texturePath: string) {
+    const oldSource = this.tilesetTextureSources.get(tilesetId)
+    if (oldSource !== texturePath) {
+      this.tilesetTextureSources.set(tilesetId, texturePath)
+      this.tilesetTextures.set(tilesetId, PIXI.Texture.from(texturePath))
+      for (const [key, cached] of this.tileChunkContainers) {
+        this.floorLayer.removeChild(cached.container)
+        cached.container.destroy({ children: true })
+        this.tileChunkContainers.delete(key)
+      }
+    }
+    return this.tilesetTextures.get(tilesetId) ?? null
+  }
+
+  private buildTileChunkContainer(
+    document: MapDocument,
+    tilesetAssets: Record<string, TilesetAsset>,
+    chunk: TileChunk,
+  ) {
+    const container = new PIXI.Container()
+    const tileSize = document.tilemap.tileSize
+
+    for (let localY = 0; localY < chunk.height; localY++) {
+      for (let localX = 0; localX < chunk.width; localX++) {
+        const gid = chunk.data[localY * chunk.width + localX]
+        if (gid === 0) continue
+        const resolved = findTilesetForGid(document.tilemap, tilesetAssets, gid)
+        if (!resolved) continue
+        const texture = this.getTilesetTexture(resolved.ref.tilesetId, resolved.asset.texturePath)
+        if (!texture) continue
+
+        const atlasX = resolved.localTileId % resolved.asset.columns
+        const atlasY = Math.floor(resolved.localTileId / resolved.asset.columns)
+        const margin = resolved.asset.margin ?? 0
+        const spacing = resolved.asset.spacing ?? 0
+        const frame = new PIXI.Rectangle(
+          margin + atlasX * (resolved.asset.tileWidth + spacing),
+          margin + atlasY * (resolved.asset.tileHeight + spacing),
+          resolved.asset.tileWidth,
+          resolved.asset.tileHeight,
+        )
+        const tileTexture = new PIXI.Texture({ source: texture.source, frame })
+        const sprite = new PIXI.Sprite(tileTexture)
+        sprite.x = (chunk.x + localX) * tileSize
+        sprite.y = (chunk.y + localY) * tileSize
+        sprite.width = tileSize
+        sprite.height = tileSize
+        container.addChild(sprite)
+      }
+    }
+
+    return container
+  }
+
+  private renderTileSelectionOverlay() {
+    const store = useEditorStore.getState()
+    const selection = store.floor.selection
+    if (!selection) return
+    const tileSize = store.document.tilemap.tileSize
+    const toScreen = this.getToScreen()
+    const topLeft = toScreen(selection.x * tileSize, selection.y * tileSize)
+    const bottomRight = toScreen((selection.x + selection.width) * tileSize, (selection.y + selection.height) * tileSize)
+
+    this.overlayLayer.rect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+    this.overlayLayer.fill({ color: COLORS.tileSelection, alpha: 0.08 })
+    this.overlayLayer.stroke({ color: COLORS.tileSelection, width: 1.5, alpha: 0.95 })
   }
 
   private renderObjects(
@@ -1818,6 +2213,12 @@ export class PixiRenderer {
     this.referenceContainers.clear()
     this.referenceSrcs.clear()
     this.refChildren.clear()
+    for (const cached of this.tileChunkContainers.values()) {
+      cached.container.destroy({ children: true })
+    }
+    this.tileChunkContainers.clear()
+    this.tilesetTextures.clear()
+    this.tilesetTextureSources.clear()
     this.app.destroy()
   }
 
