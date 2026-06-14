@@ -111,6 +111,16 @@ type Bounds = {
   maxY: number
 }
 
+type PolygonVertexHit = {
+  polygonWallId: string
+  vertexIndex: number
+}
+
+type WallEndpointHit = {
+  wallId: string
+  endpoint: "a" | "b"
+}
+
 export class PixiRenderer {
   app: PIXI.Application
   private options: PixiRendererOptions
@@ -149,6 +159,16 @@ export class PixiRenderer {
   private dragPolygonStarts = new Map<string, Vec2[]>()
   private dragWallStarts = new Map<string, { a: Vec2; b: Vec2 }>()
   private dragReferenceStarts = new Map<string, Vec2>()
+
+  private isDraggingPolygonVertex = false
+  private dragVertexPolygonId: string | null = null
+  private dragVertexIndex = -1
+  private dragVertexStartVertices: Vec2[] = []
+
+  private isDraggingWallEndpoint = false
+  private dragEndpointWallId: string | null = null
+  private dragEndpoint: "a" | "b" | null = null
+  private dragEndpointWallStart: { a: Vec2; b: Vec2 } | null = null
 
   private isDrawingWall = false
   private drawStart = { worldX: 0, worldY: 0 }
@@ -338,6 +358,35 @@ export class PixiRenderer {
 
     if (tool === "select") {
       this.previewLayer.clear()
+      const wallEndpointHit = this.hitTestWallEndpoint(sx, sy)
+      if (wallEndpointHit) {
+        const wall = store.document.walls.find(candidate => candidate.id === wallEndpointHit.wallId)
+        if (!wall) return
+
+        this.isDraggingWallEndpoint = true
+        this.dragEndpointWallId = wall.id
+        this.dragEndpoint = wallEndpointHit.endpoint
+        this.dragEndpointWallStart = {
+          a: { ...wall.a },
+          b: { ...wall.b },
+        }
+        store.setSelection([wall.id])
+        return
+      }
+
+      const vertexHit = this.hitTestPolygonVertex(sx, sy)
+      if (vertexHit) {
+        const polygonWall = store.document.polygonWalls.find(candidate => candidate.id === vertexHit.polygonWallId)
+        if (!polygonWall || isLinkedPolygonWall(store.document, polygonWall.id)) return
+
+        this.isDraggingPolygonVertex = true
+        this.dragVertexPolygonId = polygonWall.id
+        this.dragVertexIndex = vertexHit.vertexIndex
+        this.dragVertexStartVertices = getPolygonWallWorldVertices(polygonWall)
+        store.setSelection([polygonWall.id])
+        return
+      }
+
       const hit = this.hitTest(sx, sy)
       if (!hit) {
         const addToSelection = event.shiftKey
@@ -445,6 +494,16 @@ export class PixiRenderer {
       return
     }
 
+    if (this.isDraggingWallEndpoint) {
+      this.handleWallEndpointDrag(world)
+      return
+    }
+
+    if (this.isDraggingPolygonVertex) {
+      this.handlePolygonVertexDrag(world)
+      return
+    }
+
     if (this.isDrawingWall) {
       const wx = this.snapToGrid(world.x)
       const wy = this.snapToGrid(world.y)
@@ -482,6 +541,22 @@ export class PixiRenderer {
       this.pendingSingleSelectionId = null
     }
 
+    if (this.isDraggingWallEndpoint) {
+      this.isDraggingWallEndpoint = false
+      this.dragEndpointWallId = null
+      this.dragEndpoint = null
+      this.dragEndpointWallStart = null
+      return
+    }
+
+    if (this.isDraggingPolygonVertex) {
+      this.isDraggingPolygonVertex = false
+      this.dragVertexPolygonId = null
+      this.dragVertexIndex = -1
+      this.dragVertexStartVertices = []
+      return
+    }
+
     if (this.isAreaSelecting) {
       this.isAreaSelecting = false
       this.previewLayer.clear()
@@ -504,9 +579,56 @@ export class PixiRenderer {
   }
 
   private onMouseLeave = () => {
-    if (!this.isDrawingWall && !this.isDraggingObject && !this.isAreaSelecting) {
+    if (
+      !this.isDrawingWall &&
+      !this.isDraggingObject &&
+      !this.isDraggingWallEndpoint &&
+      !this.isDraggingPolygonVertex &&
+      !this.isAreaSelecting
+    ) {
       this.previewLayer.clear()
     }
+  }
+
+  private handleWallEndpointDrag(world: Vec2) {
+    if (!this.dragEndpointWallId || !this.dragEndpoint || !this.dragEndpointWallStart) return
+
+    const store = useEditorStore.getState()
+    const wall = store.document.walls.find(candidate => candidate.id === this.dragEndpointWallId)
+    if (!wall) return
+
+    const point = {
+      x: this.snapToGrid(world.x),
+      y: this.snapToGrid(world.y),
+    }
+    const nextWall = {
+      a: this.dragEndpoint === "a" ? point : { ...this.dragEndpointWallStart.a },
+      b: this.dragEndpoint === "b" ? point : { ...this.dragEndpointWallStart.b },
+    }
+
+    if (Math.hypot(nextWall.b.x - nextWall.a.x, nextWall.b.y - nextWall.a.y) < store.snapSize) return
+
+    store.updateObject(wall.id, nextWall)
+  }
+
+  private handlePolygonVertexDrag(world: Vec2) {
+    if (!this.dragVertexPolygonId || this.dragVertexIndex < 0) return
+
+    const store = useEditorStore.getState()
+    const polygonWall = store.document.polygonWalls.find(candidate => candidate.id === this.dragVertexPolygonId)
+    if (!polygonWall || isLinkedPolygonWall(store.document, polygonWall.id)) return
+
+    const targetWorld = {
+      x: this.snapToGrid(world.x),
+      y: this.snapToGrid(world.y),
+    }
+    const vertices = this.dragVertexStartVertices.map((vertex, index) =>
+      index === this.dragVertexIndex
+        ? targetWorld
+        : { ...vertex }
+    )
+
+    store.updateObject(polygonWall.id, { vertices, rotation: 0 })
   }
 
   private finalizeAreaSelection(event: MouseEvent) {
@@ -814,6 +936,55 @@ export class PixiRenderer {
       if (isLinkedPolygonWall(store.document, polygonWall.id)) continue
       if (pointInPolygon(point, getPolygonWallWorldVertices(polygonWall))) {
         return polygonWall.id
+      }
+    }
+
+    return null
+  }
+
+  private hitTestPolygonVertex(sx: number, sy: number): PolygonVertexHit | null {
+    const store = useEditorStore.getState()
+    if (!store.selection.length) return null
+
+    const point = this.screenToWorld(sx, sy)
+    const hitRadius = Math.max(1.5, 8 / (store.zoom * PPU))
+
+    for (const selectedId of [...store.selection].reverse()) {
+      const polygonWall = store.document.polygonWalls.find(candidate => candidate.id === selectedId)
+      if (!polygonWall || isLinkedPolygonWall(store.document, polygonWall.id)) continue
+
+      const vertices = getPolygonWallWorldVertices(polygonWall)
+      for (let index = vertices.length - 1; index >= 0; index--) {
+        const vertex = vertices[index]
+        if (Math.hypot(point.x - vertex.x, point.y - vertex.y) <= hitRadius) {
+          return {
+            polygonWallId: polygonWall.id,
+            vertexIndex: index,
+          }
+        }
+      }
+    }
+
+    return null
+  }
+
+  private hitTestWallEndpoint(sx: number, sy: number): WallEndpointHit | null {
+    const store = useEditorStore.getState()
+    if (!store.selection.length) return null
+
+    const point = this.screenToWorld(sx, sy)
+    const hitRadius = Math.max(1.5, 8 / (store.zoom * PPU))
+
+    for (const selectedId of [...store.selection].reverse()) {
+      const wall = store.document.walls.find(candidate => candidate.id === selectedId)
+      if (!wall) continue
+
+      if (Math.hypot(point.x - wall.b.x, point.y - wall.b.y) <= hitRadius) {
+        return { wallId: wall.id, endpoint: "b" }
+      }
+
+      if (Math.hypot(point.x - wall.a.x, point.y - wall.a.y) <= hitRadius) {
+        return { wallId: wall.id, endpoint: "a" }
       }
     }
 
