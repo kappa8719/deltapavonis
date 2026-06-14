@@ -536,10 +536,22 @@ export function unionPolygons(polygons: Vec2[][]): Vec2[] | null {
 
   const counts = new Map<string, number>()
   for (const segment of directed) {
-    counts.set(segment.key, (counts.get(segment.key) || 0) + 1)
+    const direction = segment.fromKey < segment.toKey ? 1 : -1
+    counts.set(segment.key, (counts.get(segment.key) || 0) + direction)
   }
 
-  const boundary = directed.filter(segment => counts.get(segment.key) === 1)
+  const seenBoundaryKeys = new Set<string>()
+  const boundary = directed.filter(segment => {
+    const count = counts.get(segment.key) || 0
+    if (count === 0) return false
+
+    const direction = segment.fromKey < segment.toKey ? 1 : -1
+    if (Math.sign(count) !== direction) return false
+    if (seenBoundaryKeys.has(segment.key)) return false
+
+    seenBoundaryKeys.add(segment.key)
+    return true
+  })
   const loops = traceUnionLoops(boundary)
   if (loops.length !== 1) return null
 

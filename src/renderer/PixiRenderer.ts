@@ -86,6 +86,13 @@ function getGridSteps(zoom: number) {
   }
 }
 
+function getWheelThicknessDelta(event: WheelEvent) {
+  const deltaStep = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 100 : 3
+  const thicknessDelta = Math.max(1, Math.round(Math.abs(event.deltaY) / deltaStep))
+  const direction = event.deltaY < 0 ? 1 : -1
+  return direction * thicknessDelta
+}
+
 type OpeningPreview = {
   kind: WallOpeningKind
   width: number
@@ -301,12 +308,20 @@ export class PixiRenderer {
   private onWheel = (event: WheelEvent) => {
     event.preventDefault()
     const store = useEditorStore.getState()
+    const draggedWallIds = this.getDraggedWallIds()
+
+    if (draggedWallIds.length > 0) {
+      const thicknessDelta = getWheelThicknessDelta(event)
+      for (const id of draggedWallIds) {
+        const wall = store.document.walls.find(candidate => candidate.id === id)
+        if (!wall) continue
+        store.updateObject(id, { thickness: Math.max(1, wall.thickness + thicknessDelta) })
+      }
+      return
+    }
 
     if (store.activeTool === "wall") {
-      const deltaStep = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 100 : 3
-      const thicknessDelta = Math.max(1, Math.round(Math.abs(event.deltaY) / deltaStep))
-      const direction = event.deltaY < 0 ? 1 : -1
-      store.setWallToolThickness(store.wallToolThickness + direction * thicknessDelta)
+      store.setWallToolThickness(store.wallToolThickness + getWheelThicknessDelta(event))
 
       if (this.isDrawingWall) {
         const world = this.screenToWorld(this.pointerScreen.x, this.pointerScreen.y)
@@ -1804,5 +1819,13 @@ export class PixiRenderer {
     this.referenceSrcs.clear()
     this.refChildren.clear()
     this.app.destroy()
+  }
+
+  private getDraggedWallIds() {
+    if (!this.isDraggingObject) return []
+
+    const store = useEditorStore.getState()
+    const ids = this.dragSelectionIds.length ? this.dragSelectionIds : this.dragObjectId ? [this.dragObjectId] : []
+    return ids.filter(id => store.document.walls.some(wall => wall.id === id))
   }
 }
