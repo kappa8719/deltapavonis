@@ -68,11 +68,18 @@ export function Viewport() {
   const selection = useEditorStore(s => s.selection)
   const setSelection = useEditorStore(s => s.setSelection)
   const convertWallToPolygon = useEditorStore(s => s.convertWallToPolygon)
+  const joinWalls = useEditorStore(s => s.joinWalls)
 
-  const contextWallIds = contextMenu
+  const contextObjectIds = contextMenu
     ? (contextMenu.targetId && !selection.includes(contextMenu.targetId) ? [contextMenu.targetId] : selection)
-      .filter(id => getObject(document, id)?.kind === "wall")
     : []
+  const contextWallIds = contextObjectIds
+    .filter(id => getObject(document, id)?.kind === "wall")
+  const contextJoinIds = contextObjectIds
+    .filter(id => {
+      const object = getObject(document, id)
+      return object?.kind === "wall" || object?.kind === "polygonWall"
+    })
 
   useEffect(() => {
     const container = containerRef.current
@@ -118,25 +125,40 @@ export function Viewport() {
   return (
     <div className="w-full h-full relative">
       <div ref={containerRef} className="w-full h-full" />
-      {contextMenu && contextWallIds.length > 0 && (
+      {contextMenu && (contextWallIds.length > 0 || contextJoinIds.length >= 2) && (
         <div
           className="fixed z-50 min-w-36 overflow-hidden rounded-md border border-border bg-panel shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseDown={event => event.stopPropagation()}
         >
-          <button
-            type="button"
-            className="block w-full px-3 py-2 text-left text-sm text-text hover:bg-muted"
-            onClick={() => {
-              const polygonIds = contextWallIds
-                .map(wallId => convertWallToPolygon(wallId))
-                .filter((id): id is string => Boolean(id))
-              setSelection(polygonIds)
-              setContextMenu(null)
-            }}
-          >
-            To polygon
-          </button>
+          {contextJoinIds.length >= 2 && (
+            <button
+              type="button"
+              className="block w-full px-3 py-2 text-left text-sm text-text hover:bg-muted"
+              onClick={() => {
+                const joinedId = joinWalls(contextJoinIds)
+                if (joinedId) setSelection([joinedId])
+                setContextMenu(null)
+              }}
+            >
+              Join
+            </button>
+          )}
+          {contextWallIds.length > 0 && (
+            <button
+              type="button"
+              className="block w-full px-3 py-2 text-left text-sm text-text hover:bg-muted"
+              onClick={() => {
+                const polygonIds = contextWallIds
+                  .map(wallId => convertWallToPolygon(wallId))
+                  .filter((id): id is string => Boolean(id))
+                setSelection(polygonIds)
+                setContextMenu(null)
+              }}
+            >
+              To polygon
+            </button>
+          )}
         </div>
       )}
       <ScaleGuide />

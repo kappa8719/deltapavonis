@@ -6,6 +6,7 @@ export const DEFAULT_DOOR_WIDTH = 9
 export const DEFAULT_WINDOW_WIDTH = 6
 
 const EPSILON = 0.0001
+const KEY_SCALE = 100000
 
 export type LegacyWallRect = {
   id: string
@@ -284,6 +285,265 @@ export function isValidPolygon(vertices: Vec2[]) {
   return vertices.length >= 3 &&
     vertices.every(vertex => Number.isFinite(vertex.x) && Number.isFinite(vertex.y)) &&
     Math.abs(polygonArea(vertices)) > EPSILON
+}
+
+function pointKey(point: Vec2) {
+  return `${Math.round(point.x * KEY_SCALE)},${Math.round(point.y * KEY_SCALE)}`
+}
+
+function segmentKey(a: Vec2, b: Vec2) {
+  const aKey = pointKey(a)
+  const bKey = pointKey(b)
+  return aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`
+}
+
+function almostEqual(a: number, b: number) {
+  return Math.abs(a - b) <= EPSILON
+}
+
+function pointsAlmostEqual(a: Vec2, b: Vec2) {
+  return almostEqual(a.x, b.x) && almostEqual(a.y, b.y)
+}
+
+function cross(a: Vec2, b: Vec2) {
+  return a.x * b.y - a.y * b.x
+}
+
+function subtract(a: Vec2, b: Vec2): Vec2 {
+  return { x: a.x - b.x, y: a.y - b.y }
+}
+
+function segmentPointAt(a: Vec2, b: Vec2, t: number): Vec2 {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+  }
+}
+
+function clamp01(value: number) {
+  return clamp(value, 0, 1)
+}
+
+function pointOnSegment(point: Vec2, a: Vec2, b: Vec2) {
+  const ab = subtract(b, a)
+  const ap = subtract(point, a)
+  if (Math.abs(cross(ab, ap)) > EPSILON) return false
+  return point.x >= Math.min(a.x, b.x) - EPSILON &&
+    point.x <= Math.max(a.x, b.x) + EPSILON &&
+    point.y >= Math.min(a.y, b.y) - EPSILON &&
+    point.y <= Math.max(a.y, b.y) + EPSILON
+}
+
+function pointInPolygonStrict(point: Vec2, vertices: Vec2[]) {
+  for (let i = 0; i < vertices.length; i++) {
+    if (pointOnSegment(point, vertices[i], vertices[(i + 1) % vertices.length])) return false
+  }
+  return pointInPolygon(point, vertices)
+}
+
+function addUniqueParam(params: number[], value: number) {
+  const clamped = clamp01(value)
+  if (!params.some(candidate => almostEqual(candidate, clamped))) {
+    params.push(clamped)
+  }
+}
+
+function addSegmentIntersections(a: Vec2, b: Vec2, c: Vec2, d: Vec2, abParams: number[], cdParams: number[]) {
+  const r = subtract(b, a)
+  const s = subtract(d, c)
+  const denominator = cross(r, s)
+  const ca = subtract(c, a)
+
+  if (Math.abs(denominator) > EPSILON) {
+    const t = cross(ca, s) / denominator
+    const u = cross(ca, r) / denominator
+    if (t >= -EPSILON && t <= 1 + EPSILON && u >= -EPSILON && u <= 1 + EPSILON) {
+      addUniqueParam(abParams, t)
+      addUniqueParam(cdParams, u)
+    }
+    return
+  }
+
+  if (Math.abs(cross(ca, r)) > EPSILON) return
+
+  const rr = r.x * r.x + r.y * r.y
+  const ss = s.x * s.x + s.y * s.y
+  if (rr < EPSILON || ss < EPSILON) return
+
+  const cOnAb = ((c.x - a.x) * r.x + (c.y - a.y) * r.y) / rr
+  const dOnAb = ((d.x - a.x) * r.x + (d.y - a.y) * r.y) / rr
+  const aOnCd = ((a.x - c.x) * s.x + (a.y - c.y) * s.y) / ss
+  const bOnCd = ((b.x - c.x) * s.x + (b.y - c.y) * s.y) / ss
+
+  if (Math.max(Math.min(cOnAb, dOnAb), 0) <= Math.min(Math.max(cOnAb, dOnAb), 1) + EPSILON) {
+    addUniqueParam(abParams, cOnAb)
+    addUniqueParam(abParams, dOnAb)
+    addUniqueParam(cdParams, aOnCd)
+    addUniqueParam(cdParams, bOnCd)
+  }
+}
+
+export function removeCollinearVertices(vertices: Vec2[]) {
+  if (vertices.length <= 3) return vertices
+
+  const result: Vec2[] = []
+  for (let i = 0; i < vertices.length; i++) {
+    const previous = vertices[(i - 1 + vertices.length) % vertices.length]
+    const current = vertices[i]
+    const next = vertices[(i + 1) % vertices.length]
+    if (pointsAlmostEqual(previous, current) || pointsAlmostEqual(current, next)) continue
+
+    const before = subtract(current, previous)
+    const after = subtract(next, current)
+    if (Math.abs(cross(before, after)) <= EPSILON) continue
+
+    result.push(current)
+  }
+
+  return result.length >= 3 ? result : vertices
+}
+
+type SplitEdge = {
+  polygonIndex: number
+  from: Vec2
+  to: Vec2
+  params: number[]
+}
+
+type DirectedSegment = {
+  from: Vec2
+  to: Vec2
+  fromKey: string
+  toKey: string
+  key: string
+}
+
+function normalizePolygonOrientation(vertices: Vec2[]) {
+  const clean = removeCollinearVertices(vertices)
+  return polygonArea(clean) < 0 ? [...clean].reverse() : clean
+}
+
+function splitPolygonEdges(polygons: Vec2[][]) {
+  const edges: SplitEdge[] = []
+
+  polygons.forEach((vertices, polygonIndex) => {
+    vertices.forEach((from, index) => {
+      edges.push({
+        polygonIndex,
+        from,
+        to: vertices[(index + 1) % vertices.length],
+        params: [0, 1],
+      })
+    })
+  })
+
+  for (let i = 0; i < edges.length; i++) {
+    for (let j = i + 1; j < edges.length; j++) {
+      const a = edges[i]
+      const b = edges[j]
+      if (a.polygonIndex === b.polygonIndex) continue
+      addSegmentIntersections(a.from, a.to, b.from, b.to, a.params, b.params)
+    }
+  }
+
+  return edges
+}
+
+function traceUnionLoops(segments: DirectedSegment[]) {
+  const byStart = new Map<string, DirectedSegment[]>()
+  for (const segment of segments) {
+    const outgoing = byStart.get(segment.fromKey) || []
+    outgoing.push(segment)
+    byStart.set(segment.fromKey, outgoing)
+  }
+
+  const unused = new Set(segments.map(segment => `${segment.fromKey}>${segment.toKey}`))
+  const loops: Vec2[][] = []
+
+  for (const segment of segments) {
+    const firstKey = `${segment.fromKey}>${segment.toKey}`
+    if (!unused.has(firstKey)) continue
+
+    const loop: Vec2[] = []
+    let current = segment
+
+    for (let guard = 0; guard < segments.length + 1; guard++) {
+      const currentKey = `${current.fromKey}>${current.toKey}`
+      if (!unused.delete(currentKey)) break
+
+      loop.push(current.from)
+      if (current.toKey === segment.fromKey) {
+        const clean = removeCollinearVertices(loop)
+        if (isValidPolygon(clean)) loops.push(polygonArea(clean) < 0 ? clean.reverse() : clean)
+        break
+      }
+
+      const outgoing = byStart.get(current.toKey)?.filter(candidate =>
+        unused.has(`${candidate.fromKey}>${candidate.toKey}`)
+      )
+      if (!outgoing?.length) break
+
+      const incomingAngle = Math.atan2(current.to.y - current.from.y, current.to.x - current.from.x)
+      current = outgoing.reduce((best, candidate) => {
+        const bestTurn = clockwiseTurn(incomingAngle, best)
+        const candidateTurn = clockwiseTurn(incomingAngle, candidate)
+        return candidateTurn < bestTurn ? candidate : best
+      })
+    }
+  }
+
+  return loops
+}
+
+function clockwiseTurn(incomingAngle: number, segment: DirectedSegment) {
+  const outgoingAngle = Math.atan2(segment.to.y - segment.from.y, segment.to.x - segment.from.x)
+  return (incomingAngle - outgoingAngle + Math.PI * 2) % (Math.PI * 2)
+}
+
+export function unionPolygons(polygons: Vec2[][]): Vec2[] | null {
+  const validPolygons = polygons
+    .map(normalizePolygonOrientation)
+    .filter(isValidPolygon)
+
+  if (validPolygons.length === 0) return null
+  if (validPolygons.length === 1) return removeCollinearVertices(validPolygons[0])
+
+  const splitEdges = splitPolygonEdges(validPolygons)
+  const directed: DirectedSegment[] = []
+
+  for (const edge of splitEdges) {
+    const params = [...edge.params].sort((a, b) => a - b)
+    for (let i = 0; i < params.length - 1; i++) {
+      const from = segmentPointAt(edge.from, edge.to, params[i])
+      const to = segmentPointAt(edge.from, edge.to, params[i + 1])
+      if (pointsAlmostEqual(from, to)) continue
+
+      const midpoint = segmentPointAt(from, to, 0.5)
+      const coveredByOther = validPolygons.some((vertices, polygonIndex) =>
+        polygonIndex !== edge.polygonIndex && pointInPolygonStrict(midpoint, vertices)
+      )
+      if (coveredByOther) continue
+
+      directed.push({
+        from,
+        to,
+        fromKey: pointKey(from),
+        toKey: pointKey(to),
+        key: segmentKey(from, to),
+      })
+    }
+  }
+
+  const counts = new Map<string, number>()
+  for (const segment of directed) {
+    counts.set(segment.key, (counts.get(segment.key) || 0) + 1)
+  }
+
+  const boundary = directed.filter(segment => counts.get(segment.key) === 1)
+  const loops = traceUnionLoops(boundary)
+  if (loops.length !== 1) return null
+
+  return removeCollinearVertices(loops[0])
 }
 
 export function polygonCentroid(vertices: Vec2[]): Vec2 {

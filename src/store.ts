@@ -4,8 +4,11 @@ import {
   createUnrotatedWallPolygon,
   DEFAULT_DOOR_WIDTH,
   DEFAULT_WALL_THICKNESS,
+  getPolygonWallWorldVertices,
+  getWallQuad,
   isValidPolygon,
   translatePolygon,
+  unionPolygons,
   wallRotation,
 } from "./lib/map-geometry"
 import {
@@ -18,6 +21,7 @@ import type {
   MapDocument,
   ObjectPatch,
   Opening,
+  PolygonWall,
   Prop,
   ReferenceImage,
   Wall,
@@ -147,6 +151,7 @@ type EditorStore = {
   addProp: (prop: Omit<Prop, "id" | "kind">) => string
   addReferenceImage: (img: Omit<ReferenceImage, "id" | "kind">) => string
   convertWallToPolygon: (wallId: string) => string | null
+  joinWalls: (ids: string[]) => string | null
 
   updateObject: (id: string, patch: ObjectPatch) => void
   deleteSelected: () => void
@@ -287,6 +292,62 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }))
 
     return wall.polygonWallId
+  },
+  joinWalls: ids => {
+    const requestedIds = new Set(ids)
+    const { document } = get()
+    const selectedWalls = document.walls.filter(wall => requestedIds.has(wall.id))
+    const selectedWallIds = new Set(selectedWalls.map(wall => wall.id))
+    const linkedPolygonIds = new Set(selectedWalls.map(wall => wall.polygonWallId))
+    const selectedPolygonWalls = document.polygonWalls.filter(polygonWall =>
+      requestedIds.has(polygonWall.id) && !isLinkedPolygonWall(document, polygonWall.id)
+    )
+
+    const polygons = [
+      ...selectedWalls.map(wall => getWallQuad(wall)),
+      ...selectedPolygonWalls.map(getPolygonWallWorldVertices),
+    ]
+
+    if (polygons.length < 2) return null
+
+    const vertices = unionPolygons(polygons)
+    if (!vertices || !isValidPolygon(vertices)) return null
+
+    const id = uuid()
+    const polygonCounter = (get().counters.polygonWall || 0) + 1
+    const joinedWall: PolygonWall = {
+      id,
+      kind: "polygonWall",
+      vertices,
+      rotation: 0,
+    }
+
+    set(state => {
+      const removedIds = new Set<string>([
+        ...selectedWallIds,
+        ...linkedPolygonIds,
+        ...selectedPolygonWalls.map(polygonWall => polygonWall.id),
+      ])
+
+      return {
+        document: {
+          ...state.document,
+          walls: state.document.walls.filter(wall => !selectedWallIds.has(wall.id)),
+          polygonWalls: [
+            ...state.document.polygonWalls.filter(polygonWall => !removedIds.has(polygonWall.id)),
+            joinedWall,
+          ],
+        },
+        selection: [id],
+        names: {
+          ...Object.fromEntries(Object.entries(state.names).filter(([objectId]) => !removedIds.has(objectId))),
+          [id]: `PolygonWall_${String(polygonCounter).padStart(3, "0")}`,
+        },
+        counters: { ...state.counters, polygonWall: polygonCounter },
+      }
+    })
+
+    return id
   },
 
   updateObject: (id, patch) => {
